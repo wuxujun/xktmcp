@@ -1,0 +1,39 @@
+# OS specific files
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# IDE and Tooling
+.idea/
+*.iml
+*.iws
+*.ipr
+.vscode/
+.project
+.settings/
+.classpath
+.env
+
+# Build and Binaries
+main
+mcp-server
+mcp-server-*
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+bin/
+dist/
+build/
+
+
+# In cmd/, only keep .go files
+cmd/**
+!cmd/**/
+!cmd/**/*.go
+
+*.log
+
