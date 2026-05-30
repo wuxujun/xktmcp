@@ -85,7 +85,7 @@ func RagSearchHandler(
 		logger.Toolf("rag_search", "参数: %+v", args)
 
 		startTime := time.Now()
-		items, err := svc.RagSearch(ctx, args.Query)
+		items, err := svc.RagSearch(ctx, args.UserID, args.Query)
 		latency := time.Since(startTime).Milliseconds()
 
 		if err != nil {

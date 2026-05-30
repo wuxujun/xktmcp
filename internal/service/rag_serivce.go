@@ -16,10 +16,10 @@ func NewRagService(api *client.RagAPI) *RagService {
 	return &RagService{api: api}
 }
 
-func (s *RagService) RagSearch(ctx context.Context, query string) ([]model.Rag, error) {
+func (s *RagService) RagSearch(ctx context.Context, userId, query string) ([]model.Rag, error) {
 	query = strings.TrimSpace(query)
 	if query == "" {
 		return nil, ErrInvalidQuery
 	}
-	return s.api.SearchRags(ctx, query)
+	return s.api.SearchRags(ctx, userId, query)
 }
