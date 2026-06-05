@@ -48,10 +48,11 @@ func LoadConfigFromEnv() (Config, error) {
 	if baseURL == "" {
 		baseURL = "https://yk.xkt.com"
 	}
-	logger.APIf("BaseURL: %s", baseURL)
+	logger.APIf("LoadConfig", "BaseURL: %s", baseURL)
+	// 不再使用硬编码弱默认值;缺失上游 API 令牌直接报错(fail-closed)。
 	apiToken := strings.TrimSpace(os.Getenv("API_TOKEN"))
 	if apiToken == "" {
-		apiToken = "test-token"
+		return Config{}, fmt.Errorf("missing required env API_TOKEN")
 	}
 
 	timeout := 10 * time.Second
@@ -88,16 +89,16 @@ func (a *StudentAPI) SearchStudents(ctx context.Context, query string) ([]model.
 	a.applyHeaders(req)
 
 	logger.APIf("SearchStudents", "发起请求: %s", u)
-	resp, err := a.client.Do(req)
+	resp, err := doRequestWithRetry(ctx, a.client, req, "SearchStudents")
 	if err != nil {
-		logger.APIf("SearchStudents", "请求异常: %v", err)
 		return nil, err
 	}
 	defer resp.Body.Close()
 
 	logger.APIf("SearchStudents", "响应状态码: %d", resp.StatusCode)
 	if resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("search students failed: status=%d", resp.StatusCode)
+		errMsg := readErrorDetails(resp)
+		return nil, fmt.Errorf("search students failed: status=%d error=%s", resp.StatusCode, errMsg)
 	}
 	var out searchResponse
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
@@ -116,16 +117,16 @@ func (a *StudentAPI) SearchOrders(ctx context.Context, query string) ([]model.St
 	a.applyHeaders(req)
 
 	logger.APIf("SearchOrders", "发起请求: %s", u)
-	resp, err := a.client.Do(req)
+	resp, err := doRequestWithRetry(ctx, a.client, req, "SearchOrders")
 	if err != nil {
-		logger.APIf("SearchOrders", "请求异常: %v", err)
 		return nil, err
 	}
 	defer resp.Body.Close()
 
 	logger.APIf("SearchOrders", "响应状态码: %d", resp.StatusCode)
 	if resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("search orders failed: status=%d", resp.StatusCode)
+		errMsg := readErrorDetails(resp)
+		return nil, fmt.Errorf("search orders failed: status=%d error=%s", resp.StatusCode, errMsg)
 	}
 	var out orderResponse
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
@@ -144,16 +145,16 @@ func (a *StudentAPI) SearchExam(ctx context.Context, query string) ([]model.Stud
 	a.applyHeaders(req)
 
 	logger.APIf("SearchExam", "发起请求: %s", u)
-	resp, err := a.client.Do(req)
+	resp, err := doRequestWithRetry(ctx, a.client, req, "SearchExam")
 	if err != nil {
-		logger.APIf("SearchExam", "请求异常: %v", err)
 		return nil, err
 	}
 	defer resp.Body.Close()
 
 	logger.APIf("SearchExam", "响应状态码: %d", resp.StatusCode)
 	if resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("search exam failed: status=%d", resp.StatusCode)
+		errMsg := readErrorDetails(resp)
+		return nil, fmt.Errorf("search exam failed: status=%d error=%s", resp.StatusCode, errMsg)
 	}
 	var out examResponse
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
@@ -172,9 +173,8 @@ func (a *StudentAPI) GetStudent(ctx context.Context, id string) (*model.Student,
 	a.applyHeaders(req)
 
 	logger.APIf("GetStudent", "发起请求: %s", u)
-	resp, err := a.client.Do(req)
+	resp, err := doRequestWithRetry(ctx, a.client, req, "GetStudent")
 	if err != nil {
-		logger.APIf("GetStudent", "请求异常: %v", err)
 		return nil, err
 	}
 	defer resp.Body.Close()
@@ -184,7 +184,8 @@ func (a *StudentAPI) GetStudent(ctx context.Context, id string) (*model.Student,
 		return nil, fmt.Errorf("student not found: %s", id)
 	}
 	if resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("get student failed: status=%d", resp.StatusCode)
+		errMsg := readErrorDetails(resp)
+		return nil, fmt.Errorf("get student failed: status=%d error=%s", resp.StatusCode, errMsg)
 	}
 
 	var out getResponse

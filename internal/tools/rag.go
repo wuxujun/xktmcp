@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -63,6 +64,7 @@ func RagSearchTool() *mcp.Tool {
 	return &mcp.Tool{
 		Name:        "rag_search",
 		Description: `用于企业知识库检索。输入用户问题，返回经过查询改写、检索、筛选和整理后的上下文与来源信息。当问题涉及知识库事实时，必须优先调用此工具，再基于返回的 context 和 sources 回答。`,
+		InputSchema: publicSchema[RagSearchArgs](envelopeFields),
 	}
 }
 
@@ -78,14 +80,78 @@ func rewriteQuery(query string) string {
 	return q
 }
 
+func rewriteQuerySemantic(ctx context.Context, session *mcp.ServerSession, query string) string {
+	if session == nil {
+		return rewriteQuery(query)
+	}
+
+	systemPrompt := `你是一个专业的搜索查询改写助手。你的任务是将用户输入的提问改写为最适合在企业知识库中进行检索（RAG）的精准查询词或短语。
+规则：
+1. 保持原意：不要引入多余的概念，也不要回答问题。
+2. 转换为检索词：将类似"怎么处理"、"如何处理"等口语化提问转换为"的处理规则"、"的流程"或具体的检索关键词。
+3. 紧凑精炼：直接返回改写后的查询语句，不要包含任何前导词或解释（如：改写为：...）。`
+
+	userPrompt := fmt.Sprintf("请改写以下查询：\n%s", query)
+
+	params := &mcp.CreateMessageParams{
+		SystemPrompt: systemPrompt,
+		MaxTokens:    100,
+		Messages: []*mcp.SamplingMessage{
+			{
+				Role:    mcp.Role("user"),
+				Content: &mcp.TextContent{Text: userPrompt},
+			},
+		},
+		Temperature: 0.1,
+	}
+
+	res, err := session.CreateMessage(ctx, params)
+	if err != nil {
+		logger.Errorf("[RAG] LLM semantic rewrite query failed: %v, falling back to local rewrite", err)
+		return rewriteQuery(query)
+	}
+
+	if res.Content == nil {
+		return rewriteQuery(query)
+	}
+
+	if textContent, ok := res.Content.(*mcp.TextContent); ok {
+		rewritten := strings.TrimSpace(textContent.Text)
+		if rewritten != "" {
+			logger.Infof("[RAG] LLM semantic rewrite success: %s -> %s", query, rewritten)
+			return rewritten
+		}
+	}
+
+	// Support fallback by marshaling Content to JSON and unmarshaling into a map
+	if data, err := json.Marshal(res.Content); err == nil {
+		var rawMap map[string]interface{}
+		if err := json.Unmarshal(data, &rawMap); err == nil {
+			if textVal, found := rawMap["text"].(string); found && textVal != "" {
+				rewritten := strings.TrimSpace(textVal)
+				logger.Infof("[RAG] LLM semantic rewrite success (parsed via JSON): %s -> %s", query, rewritten)
+				return rewritten
+			}
+		}
+	}
+
+	logger.Errorf("[RAG] LLM semantic rewrite returned unexpected content type: %T, falling back", res.Content)
+	return rewriteQuery(query)
+}
+
 func RagSearchHandler(
 	svc *service.RagService,
 ) func(context.Context, *mcp.CallToolRequest, RagSearchArgs) (*mcp.CallToolResult, any, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, args RagSearchArgs) (*mcp.CallToolResult, any, error) {
 		logger.Toolf("rag_search", "参数: %+v", args)
 
+		mainQuery := args.Query
+		if args.Rewrite {
+			mainQuery = rewriteQuerySemantic(ctx, req.Session, args.Query)
+		}
+
 		startTime := time.Now()
-		items, err := svc.RagSearch(ctx, args.UserID, args.Query)
+		items, err := svc.RagSearch(ctx, args.UserID, mainQuery)
 		latency := time.Since(startTime).Milliseconds()
 
 		if err != nil {
@@ -105,11 +171,6 @@ func RagSearchHandler(
 		minScore := args.MinScore
 		if minScore == 0 {
 			minScore = 0.2
-		}
-
-		mainQuery := args.Query
-		if args.Rewrite {
-			mainQuery = rewriteQuery(args.Query)
 		}
 
 		var contextParts []string

@@ -50,16 +50,16 @@ func (a *RagAPI) SearchRags(ctx context.Context, userId, query string) ([]model.
 	a.applyHeaders(req)
 
 	logger.APIf("SearchRags", "发起请求: %s", u)
-	resp, err := a.client.Do(req)
+	resp, err := doRequestWithRetry(ctx, a.client, req, "SearchRags")
 	if err != nil {
-		logger.APIf("SearchRags", "请求异常: %v", err)
 		return nil, err
 	}
 	defer resp.Body.Close()
 
 	logger.APIf("SearchRags", "响应状态码: %d", resp.StatusCode)
 	if resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("search rag failed: status=%d", resp.StatusCode)
+		errMsg := readErrorDetails(resp)
+		return nil, fmt.Errorf("search rag failed: status=%d error=%s", resp.StatusCode, errMsg)
 	}
 	var out ragSearchResponse
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
