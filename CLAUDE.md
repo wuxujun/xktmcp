@@ -33,6 +33,7 @@ go test ./internal/auth -run TestName -v   # single test
 - `AUTH_TOKEN` or `-auth-token` flag — local Bearer required by **http/sse** transports. stdio is unauthenticated by design.
 - `AUTH_REMOTE_VERIFY_URL` + `AUTH_REMOTE_ALLOWED_HOSTS` — optional remote token verification fallback. The verify URL's host must appear in the comma-separated allowlist or the fallback is disabled (SSRF guard).
 - `http`/`sse` transports refuse to start unless **at least one** of `AUTH_TOKEN`/`AUTH_REMOTE_VERIFY_URL` is configured.
+- `RAG_SEMANTIC_REWRITE` (default `true`) — when `rag_search` is called with `rewrite: true`, attempt LLM query rewriting via MCP sampling. Set to `false`/`0`/`no`/`off` to always use the local rule-based rewriter (e.g. when the connected client — such as n8n — doesn't implement `sampling/createMessage`). Read lazily on first call (after `.env` load), not at package init.
 
 Health probe: `GET /health` (unauthenticated) on http/sse transports.
 

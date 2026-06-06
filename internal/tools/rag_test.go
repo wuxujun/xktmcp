@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"errors"
 	"testing"
 )
 
@@ -54,5 +55,35 @@ func TestRewriteQuerySemanticFallback(t *testing.T) {
 	expected := "请假的处理规则"
 	if actual != expected {
 		t.Errorf("rewriteQuerySemantic(nil) = %q, want %q", actual, expected)
+	}
+}
+
+func TestIsMethodNotFound(t *testing.T) {
+	cases := []struct {
+		err  error
+		want bool
+	}{
+		{nil, false},
+		{errors.New(`calling "sampling/createMessage": Method not found`), true},
+		{errors.New("method not found"), true}, // 大小写不敏感
+		{errors.New("context deadline exceeded"), false},
+		{errors.New("connection refused"), false},
+	}
+	for _, c := range cases {
+		if got := isMethodNotFound(c.err); got != c.want {
+			t.Errorf("isMethodNotFound(%v) = %v, want %v", c.err, got, c.want)
+		}
+	}
+}
+
+func TestSamplingUnsupportedShortCircuit(t *testing.T) {
+	// 置位标志后,即使 session 非 nil 的路径也不会被走到——
+	// 这里用 nil session 验证短路返回本地改写结果,并确保测试后复位全局标志。
+	samplingUnsupported.Store(true)
+	defer samplingUnsupported.Store(false)
+
+	got := rewriteQuerySemantic(context.Background(), nil, "请假怎么处理")
+	if want := rewriteQuery("请假怎么处理"); got != want {
+		t.Errorf("标志置位时应直接走本地改写: got %q, want %q", got, want)
 	}
 }

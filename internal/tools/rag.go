@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -80,8 +83,41 @@ func rewriteQuery(query string) string {
 	return q
 }
 
+// semanticRewriteEnabled 控制 rewrite=true 时是否尝试 MCP sampling 语义改写。
+// 默认开启;设环境变量 RAG_SEMANTIC_REWRITE=false/0/no/off 可全局关闭(总是走本地规则改写)。
+//
+// 使用 sync.Once 延迟读取:.env 由 main() 的 godotenv.Load() 装载,而包级 var 初始化
+// 早于 main(),若在包初始化时读 env 会漏掉 .env 的值。延迟到首次调用即可避开此序问题。
+var (
+	semanticRewriteOnce sync.Once
+	semanticRewriteOn   bool
+)
+
+func semanticRewriteEnabled() bool {
+	semanticRewriteOnce.Do(func() {
+		v := strings.ToLower(strings.TrimSpace(os.Getenv("RAG_SEMANTIC_REWRITE")))
+		semanticRewriteOn = v != "false" && v != "0" && v != "no" && v != "off"
+		if !semanticRewriteOn {
+			logger.Infof("[RAG] 语义改写已通过 RAG_SEMANTIC_REWRITE 关闭,rewrite=true 时将使用本地规则改写")
+		}
+	})
+	return semanticRewriteOn
+}
+
+// samplingUnsupported 记录"已确认连接的客户端不支持 MCP sampling"。
+// n8n 等多数编排型客户端未实现 sampling/createMessage,首次调用会返回 Method not found;
+// 记住该结果后,后续 rewrite=true 直接走本地规则改写,避免每次都发一次注定失败的往返
+// 并刷一条错误日志。注意:这是进程级标志——若同一进程服务多个客户端,其中一个不支持
+// 即对全部生效(代价只是退化为本地改写,功能不受损)。
+var samplingUnsupported atomic.Bool
+
+// isMethodNotFound 判断错误是否为 JSON-RPC "Method not found"(客户端未实现该方法)。
+func isMethodNotFound(err error) bool {
+	return err != nil && strings.Contains(strings.ToLower(err.Error()), "method not found")
+}
+
 func rewriteQuerySemantic(ctx context.Context, session *mcp.ServerSession, query string) string {
-	if session == nil {
+	if session == nil || !semanticRewriteEnabled() || samplingUnsupported.Load() {
 		return rewriteQuery(query)
 	}
 
@@ -107,7 +143,15 @@ func rewriteQuerySemantic(ctx context.Context, session *mcp.ServerSession, query
 
 	res, err := session.CreateMessage(ctx, params)
 	if err != nil {
-		logger.Errorf("[RAG] LLM semantic rewrite query failed: %v, falling back to local rewrite", err)
+		if isMethodNotFound(err) {
+			// 客户端没实现 sampling:属预期内的能力缺失,只在首次记一条 INFO,
+			// 并置标志使后续调用直接走本地改写。
+			if samplingUnsupported.CompareAndSwap(false, true) {
+				logger.Infof("[RAG] 客户端不支持 MCP sampling(Method not found),本进程后续查询改写将直接使用本地规则")
+			}
+		} else {
+			logger.Errorf("[RAG] LLM semantic rewrite query failed: %v, falling back to local rewrite", err)
+		}
 		return rewriteQuery(query)
 	}
 
