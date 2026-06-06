@@ -26,5 +26,10 @@ func RegisterAll(s *mcp.Server) error {
 	ragSvc := service.NewRagService(ragAPI)
 	mcp.AddTool(s, tools.RagSearchTool(), tools.RagSearchHandler(ragSvc))
 
+	//Staff搜索
+	staffAPI := client.NewStaffAPI(baseCfg)
+	staffSvc := service.NewStaffService(staffAPI)
+	mcp.AddTool(s, tools.StaffSearchTool(), tools.StaffSearchHandler(staffSvc))
+
 	return nil
 }

@@ -1,0 +1,80 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Project
+
+`xktmcp` is a Go-based MCP (Model Context Protocol) server that exposes student-related data APIs and an enterprise RAG knowledge-base search to LLM clients. It wraps an upstream HTTP backend (default `https://yk.xkt.com`, configurable via `BASE_URL`) and exposes five MCP tools: `student_search`, `student_order`, `student_exam`, `student_get`, and `rag_search`.
+
+Module path: `github.com/wuxujun/xktmcp` (Go 1.25).
+
+## Commands
+
+```bash
+# Run (stdio — default, no auth)
+go run ./cmd/server/main.go
+
+# Run as HTTP (Streamable HTTP at /mcp) or SSE (at /sse, /messages/)
+go run ./cmd/server/main.go -transport=http -port=8081
+go run ./cmd/server/main.go -transport=sse  -port=8081
+
+# Build a Linux release binary
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags=jsoniter -ldflags="-s -w" -o mcp-server ./cmd/server/main.go
+
+# Tests
+go test ./...
+go test ./internal/auth -run TestName -v   # single test
+```
+
+`.env` is auto-loaded by `godotenv`. Required/optional environment:
+
+- `API_TOKEN` (**required**) — Bearer token sent to the upstream API. Server refuses to start without it (fail-closed).
+- `BASE_URL` (default `https://yk.xkt.com`), `TIMEOUT_SECONDS` (default 10).
+- `AUTH_TOKEN` or `-auth-token` flag — local Bearer required by **http/sse** transports. stdio is unauthenticated by design.
+- `AUTH_REMOTE_VERIFY_URL` + `AUTH_REMOTE_ALLOWED_HOSTS` — optional remote token verification fallback. The verify URL's host must appear in the comma-separated allowlist or the fallback is disabled (SSRF guard).
+- `http`/`sse` transports refuse to start unless **at least one** of `AUTH_TOKEN`/`AUTH_REMOTE_VERIFY_URL` is configured.
+
+Health probe: `GET /health` (unauthenticated) on http/sse transports.
+
+## Architecture
+
+Layered, dependency-injected from `cmd/server/main.go` → `internal/server/register.go`:
+
+```
+cmd/server/main.go         transport selection (stdio | sse | http), auth wiring, lumberjack log rotation, graceful shutdown
+└── internal/server        RegisterAll: builds Config from env → StudentAPI/RagAPI → *Service → registers MCP tools
+    ├── internal/client    HTTP clients for upstream API (student_client.go, rag_client.go); shared retry+error helpers in client.go
+    ├── internal/service   Thin validation/orchestration layer over clients (e.g. trim+empty checks)
+    ├── internal/tools     MCP tool definitions, JSON schemas, handlers; talks only to *Service
+    ├── internal/model     Upstream response DTOs
+    ├── internal/auth      Bearer middleware for http/sse (see below)
+    └── internal/logger    Tagged log.Printf wrappers ([INFO]/[ERROR]/[TOOL:x]/[API:x])
+```
+
+When adding a new tool, follow the existing flow: define args struct embedding `CommonArgs` → `*Tool()` returning `mcp.Tool` with `publicSchema[Args](envelopeFields)` → `*Handler(svc)` closure → register in `internal/server/register.go`.
+
+### Schema sanitization (important, non-obvious)
+
+`internal/tools/schema.go` exists because the upstream orchestrator (n8n) injects envelope fields (`sessionId`, `action`, `chatInput`, `toolCallId`, `userId`) into every tool call. `publicSchema[T](envelopeFields)`:
+
+1. Removes those fields from the **public** schema shown to the LLM (so the model doesn't try to fill them).
+2. Keeps them on the Go struct so they still deserialize (e.g. `rag_search` reads `userId` from `CommonArgs`).
+3. Sets `AdditionalProperties = nil` to disable go-sdk's default `additionalProperties: false`, otherwise n8n's extra fields would fail schema validation.
+
+Do not add envelope fields to a tool's user-facing description and do not remove them from `CommonArgs`.
+
+### Auth (`internal/auth/auth.go`)
+
+Network transports require Bearer tokens via the `Authorization` header only (no `?token=` query param — keeps tokens out of logs/proxies). Local comparison uses `crypto/subtle.ConstantTimeCompare`. Optional remote verification path has: positive/negative result caching, host allowlist (SSRF defense), and a token-bucket rate limiter. Tokens are masked (`xx…yy`) in all logs.
+
+### HTTP server timeouts (intentional)
+
+`runServer` sets only `ReadHeaderTimeout` (Slowloris defense) and `IdleTimeout`. **No `ReadTimeout`/`WriteTimeout`** — SSE and Streamable HTTP are long-lived streams and would be cut off mid-flight. Don't "fix" this by adding them.
+
+### RAG query rewriting
+
+`rag_search` with `rewrite: true` calls back into the MCP **sampling** API (`session.CreateMessage`) to ask the connected LLM to rewrite the query into retrieval-friendly form. On any failure it falls back to a local string-replace rewriter (`rewriteQuery`). Both paths are kept; do not delete the local fallback.
+
+### Logging
+
+Init happens once in `main` with `io.MultiWriter(os.Stderr, lumberjack)` writing to `server.log` (100MB × 7 backups × 7 days, gzip). Use the `logger.Infof / Errorf / Toolf / APIf` helpers rather than `log.Printf` directly — the tag prefix is how log entries are correlated.

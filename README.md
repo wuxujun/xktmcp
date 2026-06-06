@@ -6,10 +6,10 @@
 
 ```bash
 # 运行
-go run ./cmd/server/main.go -transport=http -port=8080
+go run ./cmd/server/main.go -transport=http -port=8081
 
 # 查看日志
-go run ./cmd/server/main.go -transport=http -port=8080 -debug
+go run ./cmd/server/main.go -transport=http -port=8081 -debug
 ```
 
 ```bash
