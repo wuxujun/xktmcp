@@ -12,6 +12,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -114,27 +115,49 @@ func hostAllowed(rawURL string, allowed []string) bool {
 // Middleware 返回包裹 next 的认证中间件。
 func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ip := ClientIP(r)
 		token := bearerFromHeader(r)
 		if token == "" {
-			a.deny(w, r, "缺少 Bearer 令牌")
+			a.deny(w, r, ip, "缺少 Bearer 令牌")
 			return
 		}
 
 		// 1) 本地常量时间比对。
 		if a.cfg.LocalToken != "" &&
 			subtle.ConstantTimeCompare([]byte(token), []byte(a.cfg.LocalToken)) == 1 {
+			logger.Infof("[Auth] 验证通过: %s %s from %s", r.Method, r.URL.Path, ip)
 			next.ServeHTTP(w, r)
 			return
 		}
 
 		// 2) 远程兜底(带缓存/白名单/限流)。
 		if a.remoteOK && a.verifyRemote(r.Context(), token) {
+			logger.Infof("[Auth] 验证通过(远程): %s %s from %s", r.Method, r.URL.Path, ip)
 			next.ServeHTTP(w, r)
 			return
 		}
 
-		a.deny(w, r, "令牌无效")
+		a.deny(w, r, ip, "令牌无效")
 	})
+}
+
+// ClientIP 尽力解析请求来源 IP:优先 X-Forwarded-For(取最初客户端)、X-Real-IP,
+// 回退到 RemoteAddr。仅用于日志审计,【不用于】安全决策(这些头可被伪造)。
+func ClientIP(r *http.Request) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		if i := strings.IndexByte(xff, ','); i >= 0 {
+			return strings.TrimSpace(xff[:i])
+		}
+		return strings.TrimSpace(xff)
+	}
+	if xrip := strings.TrimSpace(r.Header.Get("X-Real-IP")); xrip != "" {
+		return xrip
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
 }
 
 func bearerFromHeader(r *http.Request) string {
@@ -150,8 +173,8 @@ func bearerFromHeader(r *http.Request) string {
 	return ""
 }
 
-func (a *Authenticator) deny(w http.ResponseWriter, r *http.Request, reason string) {
-	logger.Errorf("[Auth] 验证失败: %s %s, token=%s (%s)", r.Method, r.URL.Path, mask(r.Header.Get("Authorization")), reason)
+func (a *Authenticator) deny(w http.ResponseWriter, r *http.Request, ip, reason string) {
+	logger.Errorf("[Auth] 验证失败: %s %s from %s, token=%s (%s)", r.Method, r.URL.Path, ip, mask(r.Header.Get("Authorization")), reason)
 	w.Header().Set("WWW-Authenticate", `Bearer realm="mcp"`)
 	http.Error(w, "Unauthorized", http.StatusUnauthorized)
 }
@@ -214,11 +237,7 @@ func (a *Authenticator) doRemoteCall(ctx context.Context, token string) bool {
 		return false
 	}
 	defer resp.Body.Close()
-	ok := resp.StatusCode == http.StatusOK
-	if ok {
-		logger.Infof("[Auth] 远程验证通过")
-	}
-	return ok
+	return resp.StatusCode == http.StatusOK
 }
 
 func hashToken(token string) string {

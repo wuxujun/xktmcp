@@ -124,6 +124,31 @@ func TestRemoteVerifyRateLimit(t *testing.T) {
 	}
 }
 
+func TestClientIP(t *testing.T) {
+	// X-Forwarded-For 优先,取最初客户端(首个)。
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.RemoteAddr = "10.0.0.1:5555"
+	r.Header.Set("X-Forwarded-For", "203.0.113.7, 10.0.0.1")
+	if got := ClientIP(r); got != "203.0.113.7" {
+		t.Errorf("XFF 应取首个客户端,得到 %q", got)
+	}
+
+	// 无 XFF 时退到 X-Real-IP。
+	r2 := httptest.NewRequest(http.MethodGet, "/", nil)
+	r2.RemoteAddr = "10.0.0.1:5555"
+	r2.Header.Set("X-Real-IP", "198.51.100.9")
+	if got := ClientIP(r2); got != "198.51.100.9" {
+		t.Errorf("应取 X-Real-IP,得到 %q", got)
+	}
+
+	// 都没有时退到 RemoteAddr 并剥掉端口。
+	r3 := httptest.NewRequest(http.MethodGet, "/", nil)
+	r3.RemoteAddr = "192.0.2.55:42000"
+	if got := ClientIP(r3); got != "192.0.2.55" {
+		t.Errorf("应取 RemoteAddr 的 host 部分,得到 %q", got)
+	}
+}
+
 func TestMask(t *testing.T) {
 	cases := map[string]string{
 		"":                 "(empty)",
