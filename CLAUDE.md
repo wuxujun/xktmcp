@@ -82,4 +82,4 @@ The middleware checks an **IP allowlist first** (`AUTH_IP_ALLOWLIST`): a request
 
 ### Logging
 
-Init happens once in `main` with `io.MultiWriter(os.Stderr, lumberjack)` writing to `server.log` (100MB × 7 backups × 7 days, gzip). Use the `logger.Infof / Errorf / Toolf / APIf` helpers rather than `log.Printf` directly — the tag prefix is how log entries are correlated.
+Init happens once in `main` with `io.MultiWriter(os.Stderr, lumberjack)` writing to `server.log` (100MB × 7 backups × 7 days, gzip, with a background goroutine for daily midnight rotation using local timezone). Use the `logger.Infof / Errorf / Toolf / APIf` helpers rather than `log.Printf` directly — these helpers use `log.Output(2, ...)` so that the correct caller file name and line number are preserved, and the tag prefix is how log entries are correlated.

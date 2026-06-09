@@ -37,10 +37,27 @@ func main() {
 		MaxBackups: 7,    // 保留最近 7 个备份
 		MaxAge:     7,    // 保留最近 7 天的日志
 		Compress:   true, // 压缩旧日志
+		LocalTime:  true, // 使用本地时间命名备份文件
 	}
 
 	// 初始化全局日志
 	logger.Init(io.MultiWriter(os.Stderr, logWriter))
+
+	// 启动协程：每天凌晨自动切分日志 (按天记录)
+	go func() {
+		for {
+			now := time.Now()
+			// 计算到明天凌晨 0 点的等待时间
+			next := time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, now.Location())
+			timer := time.NewTimer(next.Sub(now))
+			<-timer.C
+
+			logger.Infof("开始执行每日日志自动轮转...")
+			if err := logWriter.Rotate(); err != nil {
+				logger.Errorf("每日日志轮转失败: %v", err)
+			}
+		}
+	}()
 
 	s := mcp.NewServer(&mcp.Implementation{
 		Name:    "xkt-student-server",
