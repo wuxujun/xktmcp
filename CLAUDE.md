@@ -82,4 +82,4 @@ The middleware checks an **IP allowlist first** (`AUTH_IP_ALLOWLIST`): a request
 
 ### Logging
 
-Init happens once in `main` with `io.MultiWriter(os.Stderr, lumberjack)` writing to `server.log` (100MB × 7 backups × 7 days, gzip, with a background goroutine for daily midnight rotation using local timezone). Use the `logger.Infof / Errorf / Toolf / APIf` helpers rather than `log.Printf` directly — these helpers use `log.Output(2, ...)` so that the correct caller file name and line number are preserved, and the tag prefix is how log entries are correlated.
+Init happens once in `main` with `io.MultiWriter(os.Stderr, lumberjack)` writing to `server.log` (100MB × 7 backups × 7 days, gzip, with a background goroutine for daily midnight rotation using local timezone). The system uses the Go 1.21+ standard `log/slog` package to write structured JSON logs. Use the `logger.Infof / Errorf / Toolf / APIf` helpers rather than `log.Printf` directly — these helpers wrap `slog` with correct caller depth lookup so the exact calling file name and line number are preserved, and standard Go library logs are automatically redirected to JSON output.

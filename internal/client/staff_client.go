@@ -59,7 +59,7 @@ func (a *StaffAPI) SearchStaffs(ctx context.Context, userId, query string) ([]mo
 	logger.APIf("SearchStaffs", "响应状态码: %d", resp.StatusCode)
 	if resp.StatusCode >= 300 {
 		errMsg := readErrorDetails(resp)
-		return nil, fmt.Errorf("search rag failed: status=%d error=%s", resp.StatusCode, errMsg)
+		return nil, fmt.Errorf("search staff failed: status=%d error=%s", resp.StatusCode, errMsg)
 	}
 	var out staffSearchResponse
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
