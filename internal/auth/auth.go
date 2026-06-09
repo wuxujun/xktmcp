@@ -69,10 +69,11 @@ type Authenticator struct {
 	httpClient *http.Client
 	remoteOK   bool // RemoteVerifyURL 通过白名单校验,远程兜底可用
 
-	mu      sync.Mutex
-	cache   map[string]cacheEntry
-	bucket  float64   // 当前令牌桶余量
-	lastRef time.Time // 上次补充时间
+	limiterMu sync.Mutex
+	bucket    float64   // 当前令牌桶余量
+	lastRef   time.Time // 上次补充时间
+
+	cache sync.Map // 缓存校验结果 (key: sha256_hash_string, value: cacheEntry)
 }
 
 // Enabled 报告该认证器是否启用了任意一种认证方式。
@@ -99,7 +100,6 @@ func New(cfg Config) *Authenticator {
 	a := &Authenticator{
 		cfg:        cfg,
 		httpClient: &http.Client{Timeout: cfg.RemoteTimeout},
-		cache:      make(map[string]cacheEntry),
 		bucket:     float64(cfg.RemoteRateBurst),
 		lastRef:    time.Now(),
 	}
@@ -265,18 +265,23 @@ func (a *Authenticator) deny(w http.ResponseWriter, r *http.Request, ip, reason 
 func (a *Authenticator) verifyRemote(ctx context.Context, token string) bool {
 	key := hashToken(token)
 
-	a.mu.Lock()
-	if e, ok := a.cache[key]; ok && time.Now().Before(e.exp) {
-		a.mu.Unlock()
-		return e.ok
+	// 1. 无锁从 sync.Map 载入缓存
+	if val, ok := a.cache.Load(key); ok {
+		e := val.(cacheEntry)
+		if time.Now().Before(e.exp) {
+			return e.ok
+		}
 	}
-	// 限流:无令牌则直接拒绝远程调用(视为未通过,防放大)。
-	if !a.allowRemoteCallLocked() {
-		a.mu.Unlock()
+
+	// 2. 缓存失效，尝试远程验证（需加限流锁防瞬间穿透爆破）
+	a.limiterMu.Lock()
+	allowed := a.allowRemoteCallLocked()
+	a.limiterMu.Unlock()
+
+	if !allowed {
 		logger.Errorf("[Auth] 远程验证被限流,拒绝本次请求")
 		return false
 	}
-	a.mu.Unlock()
 
 	ok := a.doRemoteCall(ctx, token)
 
@@ -284,13 +289,13 @@ func (a *Authenticator) verifyRemote(ctx context.Context, token string) bool {
 	if ok {
 		ttl = a.cfg.PositiveTTL
 	}
-	a.mu.Lock()
-	a.cache[key] = cacheEntry{ok: ok, exp: time.Now().Add(ttl)}
-	a.mu.Unlock()
+
+	// 3. 无锁回写缓存到 sync.Map
+	a.cache.Store(key, cacheEntry{ok: ok, exp: time.Now().Add(ttl)})
 	return ok
 }
 
-// allowRemoteCallLocked 实现简单令牌桶;调用方须持有 a.mu。
+// allowRemoteCallLocked 实现简单令牌桶;调用方须持有 a.limiterMu。
 func (a *Authenticator) allowRemoteCallLocked() bool {
 	now := time.Now()
 	elapsed := now.Sub(a.lastRef).Seconds()
