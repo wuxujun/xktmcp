@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,8 +13,42 @@ import (
 	"github.com/wuxujun/xktmcp/internal/logger"
 )
 
-// doRequestWithRetry executes an HTTP request with exponential backoff retries for 5xx and network errors.
+// doRequestWithRetry 在指数退避重试之外,前置一层熔断器:
+//   - 熔断打开时直接返回 ErrCircuitOpen,快速失败,完全不打后端(也不做那 3 次重试),
+//     避免后端真宕时每个请求都白等三轮退避、拖慢整体响应;
+//   - 请求结束后据结果更新熔断器:网络错误/5xx 重试耗尽记为失败,拿到响应(含 4xx,
+//     说明后端存活)记为成功,调用方主动取消(context 取消/超时)为中性、不计入。
 func doRequestWithRetry(ctx context.Context, httpClient *http.Client, req *http.Request, apiName string) (*http.Response, error) {
+	if err := upstreamBreaker.Allow(); err != nil {
+		logger.APIf(apiName, "熔断器开启,快速失败(不打后端): %v", err)
+		return nil, err
+	}
+
+	resp, err := doRequestWithRetryInner(ctx, httpClient, req, apiName)
+
+	switch {
+	case err == nil:
+		// 拿到响应即视为后端存活(即便是 4xx);健康度恢复。
+		upstreamBreaker.RecordSuccess()
+	case isCallerCanceled(err):
+		// 调用方主动取消(context.Canceled)与上游健康无关,保持中性不计入。
+		// 注意:超时(DeadlineExceeded)不在此列——它通常是后端卡死导致客户端超时,
+		// 正是熔断器要捕捉的「宕机/挂起」信号,应记为失败。
+	default:
+		upstreamBreaker.RecordFailure()
+	}
+
+	return resp, err
+}
+
+// isCallerCanceled 判断 err 是否为调用方【主动取消】(context.Canceled)。
+// 超时(context.DeadlineExceeded)刻意不算在内:它多由后端卡死引发,应计为失败。
+func isCallerCanceled(err error) bool {
+	return errors.Is(err, context.Canceled)
+}
+
+// doRequestWithRetryInner executes an HTTP request with exponential backoff retries for 5xx and network errors.
+func doRequestWithRetryInner(ctx context.Context, httpClient *http.Client, req *http.Request, apiName string) (*http.Response, error) {
 	var resp *http.Response
 	var err error
 	maxAttempts := 3

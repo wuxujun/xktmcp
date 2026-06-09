@@ -68,6 +68,10 @@ func TestReadErrorDetails(t *testing.T) {
 }
 
 func TestDoRequestWithRetry(t *testing.T) {
+	// 隔离:重置共享熔断器,避免本测试的失败累计影响其它测试(反之亦然)。
+	upstreamBreaker.reset()
+	defer upstreamBreaker.reset()
+
 	t.Run("success on first try", func(t *testing.T) {
 		var calls int32
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
