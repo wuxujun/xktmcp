@@ -29,6 +29,13 @@ func StaffSearchHandler(
 	return func(ctx context.Context, req *mcp.CallToolRequest, args StaffSearchArgs) (*mcp.CallToolResult, any, error) {
 		logger.Toolf("staff_search", "参数: %+v", args)
 
+		cacheKey := "staff:search:" + args.Query
+		if val, ok := sharedCache.Get(cacheKey); ok {
+			cached := val.(toolResultItem)
+			logger.Infof("[Cache] staff_search hit cache: query=%s", args.Query)
+			return cached.result, cached.data, nil
+		}
+
 		items, err := svc.StaffSearch(ctx, args.UserID, args.Query)
 		if err != nil {
 			return &mcp.CallToolResult{
@@ -40,10 +47,14 @@ func StaffSearchHandler(
 		}
 
 		data, _ := json.MarshalIndent(items, "", "  ")
-		return &mcp.CallToolResult{
+		res := &mcp.CallToolResult{
 			Content: []mcp.Content{
 				&mcp.TextContent{Text: string(data)},
 			},
-		}, map[string]any{"items": items}, nil
+		}
+		structured := map[string]any{"items": items}
+		// 员工/机构信息相对稳定,沿用与 student 查询一致的 60s TTL。
+		sharedCache.Set(cacheKey, toolResultItem{result: res, data: structured}, studentQueryTTL)
+		return res, structured, nil
 	}
 }

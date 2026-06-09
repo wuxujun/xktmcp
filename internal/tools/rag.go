@@ -15,7 +15,7 @@ import (
 	"github.com/wuxujun/xktmcp/internal/service"
 )
 
-var ragCache = NewMemoryCache()
+var ragCache = sharedCache
 
 type ragCacheItem struct {
 	result   *mcp.CallToolResult

@@ -11,12 +11,19 @@ import (
 	"github.com/wuxujun/xktmcp/internal/service"
 )
 
-var studentCache = NewMemoryCache()
+var studentCache = sharedCache
 
-type studentCacheItem struct {
+// toolResultItem 缓存一次工具调用的完整结果(MCP 文本结果 + 结构化数据),
+// 供 student_* 与 staff_search 等返回 {result, data} 形态的工具复用。
+type toolResultItem struct {
 	result *mcp.CallToolResult
 	data   any
 }
+
+// studentQueryTTL 是 student_search/order/exam 这类「可变数据查询」的缓存有效期。
+// 取较短值(60s):主要用于吸收同一会话内对同一对象的重复调用,同时把订单/成绩等
+// 可变数据的陈旧窗口限制在可接受范围。student_get(档案,相对稳定)仍用 5min。
+const studentQueryTTL = 60 * time.Second
 
 type CommonArgs struct {
 	SessionID  string `json:"sessionId,omitempty"`
@@ -78,6 +85,14 @@ func StudentSearchHandler(
 ) func(context.Context, *mcp.CallToolRequest, StudentSearchArgs) (*mcp.CallToolResult, any, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, args StudentSearchArgs) (*mcp.CallToolResult, any, error) {
 		logger.Toolf("student_search", "参数: %+v", args)
+
+		cacheKey := "student:search:" + args.Query
+		if val, ok := studentCache.Get(cacheKey); ok {
+			cached := val.(toolResultItem)
+			logger.Infof("[Cache] student_search hit cache: query=%s", args.Query)
+			return cached.result, cached.data, nil
+		}
+
 		items, err := svc.Search(ctx, args.Query)
 		if err != nil {
 			return &mcp.CallToolResult{
@@ -89,11 +104,14 @@ func StudentSearchHandler(
 		}
 
 		data, _ := json.MarshalIndent(items, "", "  ")
-		return &mcp.CallToolResult{
+		res := &mcp.CallToolResult{
 			Content: []mcp.Content{
 				&mcp.TextContent{Text: string(data)},
 			},
-		}, map[string]any{"items": items}, nil
+		}
+		structured := map[string]any{"items": items}
+		studentCache.Set(cacheKey, toolResultItem{result: res, data: structured}, studentQueryTTL)
+		return res, structured, nil
 	}
 }
 
@@ -102,6 +120,14 @@ func StudentOrderHandler(
 ) func(context.Context, *mcp.CallToolRequest, StudentQueryByIDArgs) (*mcp.CallToolResult, any, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, args StudentQueryByIDArgs) (*mcp.CallToolResult, any, error) {
 		logger.Toolf("student_order", "参数: %+v", args)
+
+		cacheKey := "student:order:" + args.Query
+		if val, ok := studentCache.Get(cacheKey); ok {
+			cached := val.(toolResultItem)
+			logger.Infof("[Cache] student_order hit cache: id=%s", args.Query)
+			return cached.result, cached.data, nil
+		}
+
 		items, err := svc.SearchOrders(ctx, args.Query)
 		if err != nil {
 			return &mcp.CallToolResult{
@@ -113,11 +139,14 @@ func StudentOrderHandler(
 		}
 
 		data, _ := json.MarshalIndent(items, "", "  ")
-		return &mcp.CallToolResult{
+		res := &mcp.CallToolResult{
 			Content: []mcp.Content{
 				&mcp.TextContent{Text: string(data)},
 			},
-		}, map[string]any{"items": items}, nil
+		}
+		structured := map[string]any{"items": items}
+		studentCache.Set(cacheKey, toolResultItem{result: res, data: structured}, studentQueryTTL)
+		return res, structured, nil
 	}
 }
 
@@ -126,6 +155,14 @@ func StudentExamHandler(
 ) func(context.Context, *mcp.CallToolRequest, StudentQueryByIDArgs) (*mcp.CallToolResult, any, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, args StudentQueryByIDArgs) (*mcp.CallToolResult, any, error) {
 		logger.Toolf("student_exam", "参数: %+v", args)
+
+		cacheKey := "student:exam:" + args.Query
+		if val, ok := studentCache.Get(cacheKey); ok {
+			cached := val.(toolResultItem)
+			logger.Infof("[Cache] student_exam hit cache: id=%s", args.Query)
+			return cached.result, cached.data, nil
+		}
+
 		items, err := svc.SearchExam(ctx, args.Query)
 		if err != nil {
 			return &mcp.CallToolResult{
@@ -137,11 +174,14 @@ func StudentExamHandler(
 		}
 
 		data, _ := json.MarshalIndent(items, "", "  ")
-		return &mcp.CallToolResult{
+		res := &mcp.CallToolResult{
 			Content: []mcp.Content{
 				&mcp.TextContent{Text: string(data)},
 			},
-		}, map[string]any{"items": items}, nil
+		}
+		structured := map[string]any{"items": items}
+		studentCache.Set(cacheKey, toolResultItem{result: res, data: structured}, studentQueryTTL)
+		return res, structured, nil
 	}
 }
 
@@ -153,7 +193,7 @@ func StudentGetHandler(
 
 		cacheKey := "student:get:" + args.ID
 		if val, ok := studentCache.Get(cacheKey); ok {
-			cached := val.(studentCacheItem)
+			cached := val.(toolResultItem)
 			logger.Infof("[Cache] student_get hit cache: id=%s", args.ID)
 			return cached.result, cached.data, nil
 		}
@@ -175,7 +215,7 @@ func StudentGetHandler(
 			},
 		}
 
-		studentCache.Set(cacheKey, studentCacheItem{result: res, data: item}, 5*time.Minute)
+		studentCache.Set(cacheKey, toolResultItem{result: res, data: item}, 5*time.Minute)
 		return res, item, nil
 	}
 }
