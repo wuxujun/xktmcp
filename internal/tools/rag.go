@@ -17,12 +17,12 @@ import (
 
 type RagSearchArgs struct {
 	CommonArgs
-	Query          string  `json:"query"`
-	TopK           int     `json:"top_k"`
-	MinScore       float64 `json:"min_score"`
-	Rewrite        bool    `json:"rewrite"`
-	IncludeSources bool    `json:"include_sources"`
-	IncludeChunks  bool    `json:"include_chunks"`
+	Query          string  `json:"query" jsonschema:"用户的问题或要检索的知识库关键字"`
+	TopK           int     `json:"top_k" jsonschema:"返回的最优相似文档片段数量，默认为 5，取值范围 1-20"`
+	MinScore       float64 `json:"min_score" jsonschema:"相似度分数阈值，过滤掉低于此分数的文档片段，默认为 0.1，取值范围 0.0-1.0"`
+	Rewrite        bool    `json:"rewrite" jsonschema:"是否启用查询改写。如果用户提问不够直接、包含简称或过于含糊，设为 true 以提高检索召回率"`
+	IncludeSources bool    `json:"include_sources" jsonschema:"结果中是否包含源文档级信息（如文档名、链接），默认 true"`
+	IncludeChunks  bool    `json:"include_chunks" jsonschema:"结果中是否包含具体切片文本内容，默认 true"`
 }
 
 type SearchStrategy struct {
