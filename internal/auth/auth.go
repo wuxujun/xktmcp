@@ -12,6 +12,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
+	"fmt"
 	"net"
 	"net/http"
 	"net/url"
@@ -33,6 +34,17 @@ type Config struct {
 	// RemoteVerifyURL 的 host 必须在其中,否则远程兜底被禁用(防 SSRF)。
 	AllowedHosts []string
 
+	// AllowedCIDRs 是受信任的来源网段(IP 白名单)。命中任一网段的请求【直接放行】,
+	// 无需 Bearer 令牌——即「IP 验证通过即可忽略 Authorization 认证」。为空表示不启用。
+	AllowedCIDRs []*net.IPNet
+	// TrustForwardedHeader 决定【安全决策所用】来源 IP 的取值方式:
+	//   false(默认,安全):只认 TCP 连接的 RemoteAddr,杜绝伪造 X-Forwarded-For/
+	//                       X-Real-IP 头来冒充可信网段从而绕过认证。
+	//   true:信任 X-Forwarded-For(首个)→ X-Real-IP → RemoteAddr。
+	//        【仅当】服务部署在会重写/剥离该头的可信反向代理之后才可开启,
+	//        否则任意客户端都能伪造来源 IP 绕过 Bearer 认证。
+	TrustForwardedHeader bool
+
 	// 以下均有合理默认值。
 	PositiveTTL     time.Duration // 远程验证通过结果的缓存时长
 	NegativeTTL     time.Duration // 远程验证失败结果的缓存时长
@@ -41,9 +53,9 @@ type Config struct {
 	RemoteTimeout   time.Duration // 单次远程验证 HTTP 超时
 }
 
-// Enabled 报告是否配置了任意一种认证方式。
+// Enabled 报告是否配置了任意一种认证方式(本地令牌 / 远程兜底 / IP 白名单)。
 func (c Config) Enabled() bool {
-	return c.LocalToken != "" || c.RemoteVerifyURL != ""
+	return c.LocalToken != "" || c.RemoteVerifyURL != "" || len(c.AllowedCIDRs) > 0
 }
 
 type cacheEntry struct {
@@ -116,6 +128,18 @@ func hostAllowed(rawURL string, allowed []string) bool {
 func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ip := ClientIP(r)
+
+		// 0) 受信任网段直接放行(IP 白名单),无需 Bearer 令牌。
+		//    安全决策的 IP 取值由 TrustForwardedHeader 决定:默认仅信任 TCP 连接的
+		//    RemoteAddr,杜绝伪造转发头绕过;仅当部署在可信代理后才信任 X-Forwarded-For。
+		if len(a.cfg.AllowedCIDRs) > 0 {
+			if srcIP := a.securityClientIP(r); srcIP != nil && a.ipAllowed(srcIP) {
+				logger.Infof("[Auth] 验证通过(可信网段 %s): %s %s", srcIP, r.Method, r.URL.Path)
+				next.ServeHTTP(w, r)
+				return
+			}
+		}
+
 		token := bearerFromHeader(r)
 		if token == "" {
 			a.deny(w, r, ip, "缺少 Bearer 令牌")
@@ -158,6 +182,64 @@ func ClientIP(r *http.Request) string {
 		return r.RemoteAddr
 	}
 	return host
+}
+
+// securityClientIP 解析【用于安全决策】的来源 IP,返回 nil 表示无法解析。
+//
+// 与仅用于日志审计的 ClientIP 刻意区分:
+//   - TrustForwardedHeader=false(默认):只认 TCP 连接的 RemoteAddr,
+//     无视任何可被客户端伪造的 X-Forwarded-For/X-Real-IP 头。
+//   - TrustForwardedHeader=true:优先 X-Forwarded-For(首个)→ X-Real-IP → RemoteAddr。
+//     仅在服务位于会重写该头的可信代理之后时才应开启。
+func (a *Authenticator) securityClientIP(r *http.Request) net.IP {
+	if a.cfg.TrustForwardedHeader {
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			first := xff
+			if i := strings.IndexByte(xff, ','); i >= 0 {
+				first = xff[:i]
+			}
+			if ip := net.ParseIP(strings.TrimSpace(first)); ip != nil {
+				return ip
+			}
+		}
+		if xrip := strings.TrimSpace(r.Header.Get("X-Real-IP")); xrip != "" {
+			if ip := net.ParseIP(xrip); ip != nil {
+				return ip
+			}
+		}
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	return net.ParseIP(strings.TrimSpace(host))
+}
+
+// ipAllowed 报告 ip 是否命中任一受信任网段。
+func (a *Authenticator) ipAllowed(ip net.IP) bool {
+	for _, n := range a.cfg.AllowedCIDRs {
+		if n != nil && n.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// ParseCIDRs 把 CIDR 字符串列表解析为 *net.IPNet;空串跳过,任一非法即返回错误(fail-closed)。
+func ParseCIDRs(items []string) ([]*net.IPNet, error) {
+	var out []*net.IPNet
+	for _, s := range items {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		_, n, err := net.ParseCIDR(s)
+		if err != nil {
+			return nil, fmt.Errorf("非法 CIDR %q: %w", s, err)
+		}
+		out = append(out, n)
+	}
+	return out, nil
 }
 
 func bearerFromHeader(r *http.Request) string {

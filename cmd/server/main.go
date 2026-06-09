@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -121,6 +122,10 @@ func main() {
 //
 // 远程兜底验证默认【关闭】,仅当显式设置 AUTH_REMOTE_VERIFY_URL 时启用,
 // 且其主机必须出现在 AUTH_REMOTE_ALLOWED_HOSTS 白名单中(防 SSRF)。
+//
+// IP 白名单(AUTH_IP_ALLOWLIST,逗号分隔 CIDR)默认【关闭】;配置后,
+// 命中网段的请求直接放行、无需 Bearer 令牌。来源 IP 默认取 TCP 连接的 RemoteAddr,
+// 仅当 AUTH_TRUST_FORWARDED_HEADER=true(部署在可信代理之后)时才信任 X-Forwarded-For。
 func buildAuthConfig(localToken string) auth.Config {
 	var allowed []string
 	if raw := strings.TrimSpace(os.Getenv("AUTH_REMOTE_ALLOWED_HOSTS")); raw != "" {
@@ -130,10 +135,34 @@ func buildAuthConfig(localToken string) auth.Config {
 			}
 		}
 	}
+
+	// 解析受信任来源网段(IP 白名单);非法 CIDR 直接 fail-closed 拒绝启动。
+	var cidrs []*net.IPNet
+	if raw := strings.TrimSpace(os.Getenv("AUTH_IP_ALLOWLIST")); raw != "" {
+		parsed, err := auth.ParseCIDRs(strings.Split(raw, ","))
+		if err != nil {
+			logger.Errorf("[Auth] AUTH_IP_ALLOWLIST 配置非法,拒绝启动: %v", err)
+			os.Exit(1)
+		}
+		cidrs = parsed
+	}
+
 	return auth.Config{
-		LocalToken:      localToken,
-		RemoteVerifyURL: strings.TrimSpace(os.Getenv("AUTH_REMOTE_VERIFY_URL")),
-		AllowedHosts:    allowed,
+		LocalToken:           localToken,
+		RemoteVerifyURL:      strings.TrimSpace(os.Getenv("AUTH_REMOTE_VERIFY_URL")),
+		AllowedHosts:         allowed,
+		AllowedCIDRs:         cidrs,
+		TrustForwardedHeader: envBool("AUTH_TRUST_FORWARDED_HEADER"),
+	}
+}
+
+// envBool 解析布尔型环境变量,接受 1/true/yes/on(忽略大小写)为真,其余为假。
+func envBool(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
 	}
 }
 

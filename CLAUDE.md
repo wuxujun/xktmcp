@@ -32,7 +32,9 @@ go test ./internal/auth -run TestName -v   # single test
 - `BASE_URL` (default `https://yk.xkt.com`), `TIMEOUT_SECONDS` (default 10).
 - `AUTH_TOKEN` or `-auth-token` flag — local Bearer required by **http/sse** transports. stdio is unauthenticated by design.
 - `AUTH_REMOTE_VERIFY_URL` + `AUTH_REMOTE_ALLOWED_HOSTS` — optional remote token verification fallback. The verify URL's host must appear in the comma-separated allowlist or the fallback is disabled (SSRF guard).
-- `http`/`sse` transports refuse to start unless **at least one** of `AUTH_TOKEN`/`AUTH_REMOTE_VERIFY_URL` is configured.
+- `AUTH_IP_ALLOWLIST` — optional comma-separated CIDR allowlist (e.g. `160.79.104.0/21`). Requests whose source IP falls in any listed network are **allowed without a Bearer token** (IP passes ⇒ Authorization is ignored). Invalid CIDR ⇒ fail-closed (server refuses to start).
+- `AUTH_TRUST_FORWARDED_HEADER` (default `false`) — controls the **source IP used for the `AUTH_IP_ALLOWLIST` decision**. When `false` (default, safe) only the TCP `RemoteAddr` is trusted, so spoofed `X-Forwarded-For`/`X-Real-IP` headers can't bypass auth. Set `true` **only** when behind a trusted reverse proxy that rewrites those headers; otherwise any client could forge its source IP. (Note: the `ClientIP` used for log auditing still reads forwarded headers regardless — the security path is separate.)
+- `http`/`sse` transports refuse to start unless **at least one** of `AUTH_TOKEN`/`AUTH_REMOTE_VERIFY_URL`/`AUTH_IP_ALLOWLIST` is configured.
 - `RAG_SEMANTIC_REWRITE` (default `true`) — when `rag_search` is called with `rewrite: true`, attempt LLM query rewriting via MCP sampling. Set to `false`/`0`/`no`/`off` to always use the local rule-based rewriter (e.g. when the connected client — such as n8n — doesn't implement `sampling/createMessage`). Read lazily on first call (after `.env` load), not at package init.
 
 Health probe: `GET /health` (unauthenticated) on http/sse transports.
@@ -67,6 +69,8 @@ Do not add envelope fields to a tool's user-facing description and do not remove
 ### Auth (`internal/auth/auth.go`)
 
 Network transports require Bearer tokens via the `Authorization` header only (no `?token=` query param — keeps tokens out of logs/proxies). Local comparison uses `crypto/subtle.ConstantTimeCompare`. Optional remote verification path has: positive/negative result caching, host allowlist (SSRF defense), and a token-bucket rate limiter. Tokens are masked (`xx…yy`) in all logs.
+
+The middleware checks an **IP allowlist first** (`AUTH_IP_ALLOWLIST`): a request whose source IP is in a trusted CIDR is allowed without any token. The IP used for this decision comes from `securityClientIP`, which defaults to the real TCP `RemoteAddr` and only honors `X-Forwarded-For`/`X-Real-IP` when `AUTH_TRUST_FORWARDED_HEADER=true`. This is deliberately separate from the log-only `ClientIP` (which always reads forwarded headers) — forwarded headers are spoofable, so they must not drive a security decision unless a trusted proxy is in front.
 
 ### HTTP server timeouts (intentional)
 
