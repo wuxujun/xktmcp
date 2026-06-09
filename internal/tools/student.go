@@ -4,11 +4,19 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/wuxujun/xktmcp/internal/logger"
 	"github.com/wuxujun/xktmcp/internal/service"
 )
+
+var studentCache = NewMemoryCache()
+
+type studentCacheItem struct {
+	result *mcp.CallToolResult
+	data   any
+}
 
 type CommonArgs struct {
 	SessionID  string `json:"sessionId,omitempty"`
@@ -142,6 +150,14 @@ func StudentGetHandler(
 ) func(context.Context, *mcp.CallToolRequest, StudentGetArgs) (*mcp.CallToolResult, any, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, args StudentGetArgs) (*mcp.CallToolResult, any, error) {
 		logger.Toolf("student_get", "参数: %+v", args)
+
+		cacheKey := "student:get:" + args.ID
+		if val, ok := studentCache.Get(cacheKey); ok {
+			cached := val.(studentCacheItem)
+			logger.Infof("[Cache] student_get hit cache: id=%s", args.ID)
+			return cached.result, cached.data, nil
+		}
+
 		item, err := svc.Get(ctx, args.ID)
 		if err != nil {
 			return &mcp.CallToolResult{
@@ -153,10 +169,13 @@ func StudentGetHandler(
 		}
 
 		data, _ := json.MarshalIndent(item, "", "  ")
-		return &mcp.CallToolResult{
+		res := &mcp.CallToolResult{
 			Content: []mcp.Content{
 				&mcp.TextContent{Text: string(data)},
 			},
-		}, item, nil
+		}
+
+		studentCache.Set(cacheKey, studentCacheItem{result: res, data: item}, 5*time.Minute)
+		return res, item, nil
 	}
 }

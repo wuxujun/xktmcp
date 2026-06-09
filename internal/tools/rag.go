@@ -15,6 +15,13 @@ import (
 	"github.com/wuxujun/xktmcp/internal/service"
 )
 
+var ragCache = NewMemoryCache()
+
+type ragCacheItem struct {
+	result   *mcp.CallToolResult
+	response RagSearchResponse
+}
+
 type RagSearchArgs struct {
 	CommonArgs
 	Query          string  `json:"query" jsonschema:"用户的问题或要检索的知识库关键字"`
@@ -189,6 +196,21 @@ func RagSearchHandler(
 	return func(ctx context.Context, req *mcp.CallToolRequest, args RagSearchArgs) (*mcp.CallToolResult, any, error) {
 		logger.Toolf("rag_search", "参数: %+v", args)
 
+		cacheKey := fmt.Sprintf("rag:search:%s:%s:%d:%.4f:%t:%t:%t",
+			args.UserID, args.Query, args.TopK, args.MinScore, args.Rewrite, args.IncludeSources, args.IncludeChunks)
+
+		if val, ok := ragCache.Get(cacheKey); ok {
+			cached := val.(ragCacheItem)
+			logger.Infof("[Cache] rag_search hit cache: query=%s", args.Query)
+
+			// Copy and update cache hit metadata
+			response := cached.response
+			response.Meta.Cached = true
+			response.Meta.LatencyMS = 0
+
+			return cached.result, response, nil
+		}
+
 		mainQuery := args.Query
 		if args.Rewrite {
 			mainQuery = rewriteQuerySemantic(ctx, req.Session, args.Query)
@@ -273,10 +295,13 @@ func RagSearchHandler(
 			},
 		}
 
-		return &mcp.CallToolResult{
+		res := &mcp.CallToolResult{
 			Content: []mcp.Content{
 				&mcp.TextContent{Text: contextStr},
 			},
-		}, resp, nil
+		}
+
+		ragCache.Set(cacheKey, ragCacheItem{result: res, response: resp}, 5*time.Minute)
+		return res, resp, nil
 	}
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -164,8 +165,18 @@ func buildAuthConfig(localToken string) auth.Config {
 		cidrs = parsed
 	}
 
+	// 解析多租户配置
+	var tenants []auth.TenantConfig
+	if raw := strings.TrimSpace(os.Getenv("AUTH_TENANTS")); raw != "" {
+		if err := json.Unmarshal([]byte(raw), &tenants); err != nil {
+			logger.Errorf("[Auth] 解析 AUTH_TENANTS 环境变量失败: %v", err)
+			os.Exit(1)
+		}
+	}
+
 	return auth.Config{
 		LocalToken:           localToken,
+		Tenants:              tenants,
 		RemoteVerifyURL:      strings.TrimSpace(os.Getenv("AUTH_REMOTE_VERIFY_URL")),
 		AllowedHosts:         allowed,
 		AllowedCIDRs:         cidrs,

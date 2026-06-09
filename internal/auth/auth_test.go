@@ -285,3 +285,45 @@ func TestParseCIDRs(t *testing.T) {
 		t.Fatal("非法 CIDR 应返回错误")
 	}
 }
+
+// 多租户鉴权与工具级 ACL 检查测试。
+func TestMultiTenantAuth(t *testing.T) {
+	config := Config{
+		Tenants: []TenantConfig{
+			{
+				Name:         "test-tenant-1",
+				Token:        "token-1",
+				AllowedTools: []string{"rag_search"},
+				RateRPS:      100,
+				RateBurst:    100,
+			},
+			{
+				Name:         "test-tenant-2",
+				Token:        "token-2",
+				AllowedTools: []string{"*"},
+			},
+		},
+	}
+	a := New(config)
+
+	// Case 1: Tenant 1 调用允许的工具 -> 200 OK
+	req1 := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","method":"tools/call","params":{"name":"rag_search"}}`))
+	req1.Header.Set("Authorization", "Bearer token-1")
+	if code := serve(a, req1); code != http.StatusOK {
+		t.Errorf("tenant-1 calling allowed tool should pass, got %d", code)
+	}
+
+	// Case 2: Tenant 1 调用禁用的工具 -> 401 Unauthorized
+	req2 := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","method":"tools/call","params":{"name":"student_search"}}`))
+	req2.Header.Set("Authorization", "Bearer token-1")
+	if code := serve(a, req2); code != http.StatusUnauthorized {
+		t.Errorf("tenant-1 calling disallowed tool should get 401/Unauthorized, got %d", code)
+	}
+
+	// Case 3: Tenant 2 调用任何工具 (由于 * 权限) -> 200 OK
+	req3 := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","method":"tools/call","params":{"name":"student_search"}}`))
+	req3.Header.Set("Authorization", "Bearer token-2")
+	if code := serve(a, req3); code != http.StatusOK {
+		t.Errorf("tenant-2 calling any tool should pass, got %d", code)
+	}
+}

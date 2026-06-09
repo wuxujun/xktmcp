@@ -8,11 +8,14 @@
 package auth
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/json"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -23,10 +26,21 @@ import (
 	"github.com/wuxujun/xktmcp/internal/logger"
 )
 
+// TenantConfig 定义多租户配置结构
+type TenantConfig struct {
+	Name         string   `json:"name"`
+	Token        string   `json:"token"`
+	AllowedTools []string `json:"allowed_tools"` // 允许调用的工具列表，"*" 表示允许所有
+	RateRPS      float64  `json:"rate_rps"`      // 租户专属限流速率 (每秒请求数)
+	RateBurst    int      `json:"rate_burst"`    // 租户专属限流突发容量
+}
+
 // Config 来自环境/命令行的认证配置。
 type Config struct {
 	// LocalToken 是静态本地令牌;为空表示不启用本地比对。
 	LocalToken string
+	// Tenants 存储多租户配置。
+	Tenants []TenantConfig
 	// RemoteVerifyURL 是远程验证端点(完整 URL,如 https://yk.xkt.com/api/auth/check);
 	// 为空表示不启用远程兜底。
 	RemoteVerifyURL string
@@ -38,7 +52,7 @@ type Config struct {
 	// 无需 Bearer 令牌——即「IP 验证通过即可忽略 Authorization 认证」。为空表示不启用。
 	AllowedCIDRs []*net.IPNet
 	// TrustForwardedHeader 决定【安全决策所用】来源 IP 的取值方式:
-	//   false(默认,安全):只认 TCP 连接的 RemoteAddr,杜绝伪造 X-Forwarded-For/
+	//   false(默认,安全):只认 TCP 连接 of RemoteAddr,杜绝伪造 X-Forwarded-For/
 	//                       X-Real-IP 头来冒充可信网段从而绕过认证。
 	//   true:信任 X-Forwarded-For(首个)→ X-Real-IP → RemoteAddr。
 	//        【仅当】服务部署在会重写/剥离该头的可信反向代理之后才可开启,
@@ -53,14 +67,50 @@ type Config struct {
 	RemoteTimeout   time.Duration // 单次远程验证 HTTP 超时
 }
 
-// Enabled 报告是否配置了任意一种认证方式(本地令牌 / 远程兜底 / IP 白名单)。
+// Enabled 报告是否配置了任意一种认证方式(本地令牌 / 多租户 / 远程兜底 / IP 白名单)。
 func (c Config) Enabled() bool {
-	return c.LocalToken != "" || c.RemoteVerifyURL != "" || len(c.AllowedCIDRs) > 0
+	return c.LocalToken != "" || len(c.Tenants) > 0 || c.RemoteVerifyURL != "" || len(c.AllowedCIDRs) > 0
 }
 
 type cacheEntry struct {
 	ok  bool
 	exp time.Time
+}
+
+type tenantLimiter struct {
+	mu      sync.Mutex
+	bucket  float64
+	lastRef time.Time
+}
+
+func newTenantLimiter(burst int) *tenantLimiter {
+	return &tenantLimiter{
+		bucket:  float64(burst),
+		lastRef: time.Now(),
+	}
+}
+
+func (tl *tenantLimiter) Allow(rps float64, burst int) bool {
+	tl.mu.Lock()
+	defer tl.mu.Unlock()
+
+	now := time.Now()
+	elapsed := now.Sub(tl.lastRef).Seconds()
+	tl.lastRef = now
+	tl.bucket += elapsed * rps
+	if maxBurst := float64(burst); tl.bucket > maxBurst {
+		tl.bucket = maxBurst
+	}
+	if tl.bucket >= 1 {
+		tl.bucket--
+		return true
+	}
+	return false
+}
+
+type Tenant struct {
+	Config  TenantConfig
+	Limiter *tenantLimiter
 }
 
 // Authenticator 是可复用的认证器(并发安全)。
@@ -74,6 +124,8 @@ type Authenticator struct {
 	lastRef   time.Time // 上次补充时间
 
 	cache sync.Map // 缓存校验结果 (key: sha256_hash_string, value: cacheEntry)
+
+	tenantsByToken map[string]*Tenant
 }
 
 // Enabled 报告该认证器是否启用了任意一种认证方式。
@@ -107,6 +159,27 @@ func New(cfg Config) *Authenticator {
 	if cfg.RemoteVerifyURL != "" && !a.remoteOK {
 		logger.Errorf("[Auth] 远程验证 URL 的主机不在白名单内,已禁用远程兜底: %s", cfg.RemoteVerifyURL)
 	}
+
+	// 初始化租户映射与限流器
+	a.tenantsByToken = make(map[string]*Tenant)
+	for _, tc := range cfg.Tenants {
+		if tc.Token == "" {
+			continue
+		}
+		var limiter *tenantLimiter
+		if tc.RateRPS > 0 {
+			burst := tc.RateBurst
+			if burst <= 0 {
+				burst = 10
+			}
+			limiter = newTenantLimiter(burst)
+		}
+		a.tenantsByToken[tc.Token] = &Tenant{
+			Config:  tc,
+			Limiter: limiter,
+		}
+	}
+
 	return a
 }
 
@@ -146,7 +219,45 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 			return
 		}
 
-		// 1) 本地常量时间比对。
+		// 1) 多租户鉴权与细粒度流控、ACL 检查
+		if len(a.tenantsByToken) > 0 {
+			if tenant, ok := a.tenantsByToken[token]; ok {
+				// 租户级流控
+				if tenant.Limiter != nil && tenant.Config.RateRPS > 0 {
+					burst := tenant.Config.RateBurst
+					if burst <= 0 {
+						burst = 10
+					}
+					if !tenant.Limiter.Allow(tenant.Config.RateRPS, burst) {
+						a.deny(w, r, ip, fmt.Sprintf("租户 %s 触发限流", tenant.Config.Name))
+						return
+					}
+				}
+
+				// 租户级工具 ACL 权限检查
+				toolName, bodyBytes, err := extractToolName(r)
+				if err != nil {
+					a.deny(w, r, ip, fmt.Sprintf("读取请求 payload 失败: %v", err))
+					return
+				}
+				if len(bodyBytes) > 0 {
+					r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+				}
+
+				if toolName != "" {
+					if !isToolAllowed(toolName, tenant.Config.AllowedTools) {
+						a.deny(w, r, ip, fmt.Sprintf("租户 %s 无权调用工具 %s", tenant.Config.Name, toolName))
+						return
+					}
+				}
+
+				logger.Infof("[Auth] 租户 %s 验证通过: %s %s from %s", tenant.Config.Name, r.Method, r.URL.Path, ip)
+				next.ServeHTTP(w, r)
+				return
+			}
+		}
+
+		// 2) 本地常量时间比对 (全局静态 Token 兜底)。
 		if a.cfg.LocalToken != "" &&
 			subtle.ConstantTimeCompare([]byte(token), []byte(a.cfg.LocalToken)) == 1 {
 			logger.Infof("[Auth] 验证通过: %s %s from %s", r.Method, r.URL.Path, ip)
@@ -154,7 +265,7 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 			return
 		}
 
-		// 2) 远程兜底(带缓存/白名单/限流)。
+		// 3) 远程兜底(带缓存/白名单/限流)。
 		if a.remoteOK && a.verifyRemote(r.Context(), token) {
 			logger.Infof("[Auth] 验证通过(远程): %s %s from %s", r.Method, r.URL.Path, ip)
 			next.ServeHTTP(w, r)
@@ -343,4 +454,41 @@ func mask(s string) string {
 		return "****"
 	}
 	return s[:2] + "…" + s[n-2:]
+}
+
+type jsonRPCRequest struct {
+	Method string `json:"method"`
+	Params struct {
+		Name string `json:"name"`
+	} `json:"params"`
+}
+
+func extractToolName(r *http.Request) (string, []byte, error) {
+	if r.Method != http.MethodPost || r.Body == nil {
+		return "", nil, nil
+	}
+	bodyBytes, err := io.ReadAll(r.Body)
+	if err != nil {
+		return "", nil, err
+	}
+
+	var rpcReq jsonRPCRequest
+	if err := json.Unmarshal(bodyBytes, &rpcReq); err == nil {
+		if rpcReq.Method == "tools/call" {
+			return rpcReq.Params.Name, bodyBytes, nil
+		}
+	}
+	return "", bodyBytes, nil
+}
+
+func isToolAllowed(toolName string, allowed []string) bool {
+	for _, item := range allowed {
+		if item == "*" {
+			return true
+		}
+		if item == toolName {
+			return true
+		}
+	}
+	return false
 }
