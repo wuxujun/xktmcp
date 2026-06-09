@@ -49,14 +49,14 @@ func (a *RagAPI) SearchRags(ctx context.Context, userId, query string) ([]model.
 	}
 	a.applyHeaders(req)
 
-	logger.APIf("SearchRags", "发起请求: %s", u)
+	logger.APIfCtx(ctx, "SearchRags", "发起请求: %s", u)
 	resp, err := doRequestWithRetry(ctx, a.client, req, "SearchRags")
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 
-	logger.APIf("SearchRags", "响应状态码: %d", resp.StatusCode)
+	logger.APIfCtx(ctx, "SearchRags", "响应状态码: %d", resp.StatusCode)
 	if resp.StatusCode >= 300 {
 		errMsg := readErrorDetails(resp)
 		return nil, fmt.Errorf("search rag failed: status=%d error=%s", resp.StatusCode, errMsg)

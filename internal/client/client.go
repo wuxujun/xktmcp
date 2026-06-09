@@ -20,7 +20,7 @@ import (
 //     说明后端存活)记为成功,调用方主动取消(context 取消/超时)为中性、不计入。
 func doRequestWithRetry(ctx context.Context, httpClient *http.Client, req *http.Request, apiName string) (*http.Response, error) {
 	if err := upstreamBreaker.Allow(); err != nil {
-		logger.APIf(apiName, "熔断器开启,快速失败(不打后端): %v", err)
+		logger.APIfCtx(ctx, apiName, "熔断器开启,快速失败(不打后端): %v", err)
 		return nil, err
 	}
 
@@ -61,7 +61,7 @@ func doRequestWithRetryInner(ctx context.Context, httpClient *http.Client, req *
 		}
 
 		if attempt > 1 {
-			logger.APIf(apiName, "正在进行第 %d 次重试，等待 %v...", attempt, backoff)
+			logger.APIfCtx(ctx, apiName, "正在进行第 %d 次重试，等待 %v...", attempt, backoff)
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
@@ -74,7 +74,7 @@ func doRequestWithRetryInner(ctx context.Context, httpClient *http.Client, req *
 		if err == nil {
 			// If it's a server-side transient error, retry.
 			if resp.StatusCode >= 500 && resp.StatusCode <= 599 {
-				logger.APIf(apiName, "尝试 %d 失败，服务侧状态码: %d", attempt, resp.StatusCode)
+				logger.APIfCtx(ctx, apiName, "尝试 %d 失败，服务侧状态码: %d", attempt, resp.StatusCode)
 				resp.Body.Close()
 				err = fmt.Errorf("server error: status=%d", resp.StatusCode)
 				continue
@@ -83,7 +83,7 @@ func doRequestWithRetryInner(ctx context.Context, httpClient *http.Client, req *
 		}
 
 		// Network/timeout error, we can retry.
-		logger.APIf(apiName, "尝试 %d 异常: %v", attempt, err)
+		logger.APIfCtx(ctx, apiName, "尝试 %d 异常: %v", attempt, err)
 	}
 
 	return nil, fmt.Errorf("request failed after %d attempts: %w", maxAttempts, err)

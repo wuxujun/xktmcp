@@ -33,6 +33,16 @@ type CommonArgs struct {
 	UserID     string `json:"userId,omitempty"`
 }
 
+// CorrelationID 返回用于请求级 trace 的关联 id:优先 n8n 透传的 toolCallId,
+// 其次 sessionId;都为空则返回空串(由上层生成新 id)。所有工具 Args 均内嵌
+// CommonArgs,故该方法被提升到各 Args 类型上,可用于统一埋点。
+func (c CommonArgs) CorrelationID() string {
+	if c.ToolCallID != "" {
+		return c.ToolCallID
+	}
+	return c.SessionID
+}
+
 type StudentSearchArgs struct {
 	CommonArgs
 	Query string `json:"query" jsonschema:"查询关键字，可以输入学员姓名、手机号等模糊信息"`
@@ -84,12 +94,12 @@ func StudentSearchHandler(
 	svc *service.StudentService,
 ) func(context.Context, *mcp.CallToolRequest, StudentSearchArgs) (*mcp.CallToolResult, any, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, args StudentSearchArgs) (*mcp.CallToolResult, any, error) {
-		logger.Toolf("student_search", "参数: %+v", args)
+		logger.ToolfCtx(ctx, "student_search", "参数: %+v", args)
 
 		cacheKey := "student:search:" + args.Query
 		if val, ok := studentCache.Get(cacheKey); ok {
 			cached := val.(toolResultItem)
-			logger.Infof("[Cache] student_search hit cache: query=%s", args.Query)
+			logger.InfofCtx(ctx, "[Cache] student_search hit cache: query=%s", args.Query)
 			return cached.result, cached.data, nil
 		}
 
@@ -119,12 +129,12 @@ func StudentOrderHandler(
 	svc *service.StudentService,
 ) func(context.Context, *mcp.CallToolRequest, StudentQueryByIDArgs) (*mcp.CallToolResult, any, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, args StudentQueryByIDArgs) (*mcp.CallToolResult, any, error) {
-		logger.Toolf("student_order", "参数: %+v", args)
+		logger.ToolfCtx(ctx, "student_order", "参数: %+v", args)
 
 		cacheKey := "student:order:" + args.Query
 		if val, ok := studentCache.Get(cacheKey); ok {
 			cached := val.(toolResultItem)
-			logger.Infof("[Cache] student_order hit cache: id=%s", args.Query)
+			logger.InfofCtx(ctx, "[Cache] student_order hit cache: id=%s", args.Query)
 			return cached.result, cached.data, nil
 		}
 
@@ -154,12 +164,12 @@ func StudentExamHandler(
 	svc *service.StudentService,
 ) func(context.Context, *mcp.CallToolRequest, StudentQueryByIDArgs) (*mcp.CallToolResult, any, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, args StudentQueryByIDArgs) (*mcp.CallToolResult, any, error) {
-		logger.Toolf("student_exam", "参数: %+v", args)
+		logger.ToolfCtx(ctx, "student_exam", "参数: %+v", args)
 
 		cacheKey := "student:exam:" + args.Query
 		if val, ok := studentCache.Get(cacheKey); ok {
 			cached := val.(toolResultItem)
-			logger.Infof("[Cache] student_exam hit cache: id=%s", args.Query)
+			logger.InfofCtx(ctx, "[Cache] student_exam hit cache: id=%s", args.Query)
 			return cached.result, cached.data, nil
 		}
 
@@ -189,12 +199,12 @@ func StudentGetHandler(
 	svc *service.StudentService,
 ) func(context.Context, *mcp.CallToolRequest, StudentGetArgs) (*mcp.CallToolResult, any, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, args StudentGetArgs) (*mcp.CallToolResult, any, error) {
-		logger.Toolf("student_get", "参数: %+v", args)
+		logger.ToolfCtx(ctx, "student_get", "参数: %+v", args)
 
 		cacheKey := "student:get:" + args.ID
 		if val, ok := studentCache.Get(cacheKey); ok {
 			cached := val.(toolResultItem)
-			logger.Infof("[Cache] student_get hit cache: id=%s", args.ID)
+			logger.InfofCtx(ctx, "[Cache] student_get hit cache: id=%s", args.ID)
 			return cached.result, cached.data, nil
 		}
 

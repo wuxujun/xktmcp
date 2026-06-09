@@ -88,14 +88,14 @@ func (a *StudentAPI) SearchStudents(ctx context.Context, query string) ([]model.
 	}
 	a.applyHeaders(req)
 
-	logger.APIf("SearchStudents", "发起请求: %s", u)
+	logger.APIfCtx(ctx, "SearchStudents", "发起请求: %s", u)
 	resp, err := doRequestWithRetry(ctx, a.client, req, "SearchStudents")
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 
-	logger.APIf("SearchStudents", "响应状态码: %d", resp.StatusCode)
+	logger.APIfCtx(ctx, "SearchStudents", "响应状态码: %d", resp.StatusCode)
 	if resp.StatusCode >= 300 {
 		errMsg := readErrorDetails(resp)
 		return nil, fmt.Errorf("search students failed: status=%d error=%s", resp.StatusCode, errMsg)
@@ -116,14 +116,14 @@ func (a *StudentAPI) SearchOrders(ctx context.Context, query string) ([]model.St
 	}
 	a.applyHeaders(req)
 
-	logger.APIf("SearchOrders", "发起请求: %s", u)
+	logger.APIfCtx(ctx, "SearchOrders", "发起请求: %s", u)
 	resp, err := doRequestWithRetry(ctx, a.client, req, "SearchOrders")
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 
-	logger.APIf("SearchOrders", "响应状态码: %d", resp.StatusCode)
+	logger.APIfCtx(ctx, "SearchOrders", "响应状态码: %d", resp.StatusCode)
 	if resp.StatusCode >= 300 {
 		errMsg := readErrorDetails(resp)
 		return nil, fmt.Errorf("search orders failed: status=%d error=%s", resp.StatusCode, errMsg)
@@ -144,14 +144,14 @@ func (a *StudentAPI) SearchExam(ctx context.Context, query string) ([]model.Stud
 	}
 	a.applyHeaders(req)
 
-	logger.APIf("SearchExam", "发起请求: %s", u)
+	logger.APIfCtx(ctx, "SearchExam", "发起请求: %s", u)
 	resp, err := doRequestWithRetry(ctx, a.client, req, "SearchExam")
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 
-	logger.APIf("SearchExam", "响应状态码: %d", resp.StatusCode)
+	logger.APIfCtx(ctx, "SearchExam", "响应状态码: %d", resp.StatusCode)
 	if resp.StatusCode >= 300 {
 		errMsg := readErrorDetails(resp)
 		return nil, fmt.Errorf("search exam failed: status=%d error=%s", resp.StatusCode, errMsg)
@@ -172,14 +172,14 @@ func (a *StudentAPI) GetStudent(ctx context.Context, id string) (*model.Student,
 	}
 	a.applyHeaders(req)
 
-	logger.APIf("GetStudent", "发起请求: %s", u)
+	logger.APIfCtx(ctx, "GetStudent", "发起请求: %s", u)
 	resp, err := doRequestWithRetry(ctx, a.client, req, "GetStudent")
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 
-	logger.APIf("GetStudent", "响应状态码: %d", resp.StatusCode)
+	logger.APIfCtx(ctx, "GetStudent", "响应状态码: %d", resp.StatusCode)
 	if resp.StatusCode == http.StatusNotFound {
 		return nil, fmt.Errorf("student not found: %s", id)
 	}

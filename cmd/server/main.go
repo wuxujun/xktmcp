@@ -18,6 +18,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/wuxujun/xktmcp/internal/auth"
 	"github.com/wuxujun/xktmcp/internal/logger"
+	"github.com/wuxujun/xktmcp/internal/metrics"
 	mcp_server "github.com/wuxujun/xktmcp/internal/server"
 	"gopkg.in/natefinch/lumberjack.v2"
 )
@@ -102,6 +103,8 @@ func main() {
 		mux := http.NewServeMux()
 		// 健康检查端点(免认证,供探针使用)
 		mux.HandleFunc("/health", healthHandler)
+		// Prometheus 指标端点(免认证,供抓取;如需保护可置于网络隔离或反代后)
+		mux.Handle("/metrics", metrics.Handler())
 		// 客户端连接 /sse 路径来建立事件流
 		mux.Handle("/sse", finalHandler)
 		// 客户端通过 POST /messages/... 发送 JSON-RPC 消息
@@ -123,6 +126,8 @@ func main() {
 		mux := http.NewServeMux()
 		// 健康检查端点(免认证,供探针使用)
 		mux.HandleFunc("/health", healthHandler)
+		// Prometheus 指标端点(免认证,供抓取;如需保护可置于网络隔离或反代后)
+		mux.Handle("/metrics", metrics.Handler())
 		// Streamable HTTP 默认通过单一路径处理
 		mux.Handle("/mcp", finalHandler)
 

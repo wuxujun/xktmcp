@@ -27,12 +27,12 @@ func StaffSearchHandler(
 	svc *service.StaffService,
 ) func(context.Context, *mcp.CallToolRequest, StaffSearchArgs) (*mcp.CallToolResult, any, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, args StaffSearchArgs) (*mcp.CallToolResult, any, error) {
-		logger.Toolf("staff_search", "参数: %+v", args)
+		logger.ToolfCtx(ctx, "staff_search", "参数: %+v", args)
 
 		cacheKey := "staff:search:" + args.Query
 		if val, ok := sharedCache.Get(cacheKey); ok {
 			cached := val.(toolResultItem)
-			logger.Infof("[Cache] staff_search hit cache: query=%s", args.Query)
+			logger.InfofCtx(ctx, "[Cache] staff_search hit cache: query=%s", args.Query)
 			return cached.result, cached.data, nil
 		}
 

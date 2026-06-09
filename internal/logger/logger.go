@@ -8,16 +8,38 @@ import (
 	"log/slog"
 	"runtime"
 	"time"
+
+	"github.com/wuxujun/xktmcp/internal/trace"
 )
 
 var defaultLogger *slog.Logger
 
+// traceHandler 包裹底层 slog.Handler,在每条日志写出前,从 context 取出 trace id
+// 并作为 trace_id 字段注入——这样无需改动各处日志的格式串,只要调用方传入带 trace id
+// 的 context(*Ctx 系列),同一请求的日志即可凭 trace_id 串联。
+type traceHandler struct{ slog.Handler }
+
+func (h traceHandler) Handle(ctx context.Context, r slog.Record) error {
+	if id := trace.IDFromContext(ctx); id != "" {
+		r.AddAttrs(slog.String("trace_id", id))
+	}
+	return h.Handler.Handle(ctx, r)
+}
+
+func (h traceHandler) WithAttrs(as []slog.Attr) slog.Handler {
+	return traceHandler{h.Handler.WithAttrs(as)}
+}
+
+func (h traceHandler) WithGroup(name string) slog.Handler {
+	return traceHandler{h.Handler.WithGroup(name)}
+}
+
 // Init 初始化全局日志输出并重定向标准 log
 func Init(w io.Writer) {
 	// 启用 Source 选项以输出源文件和行号
-	handler := slog.NewJSONHandler(w, &slog.HandlerOptions{
+	handler := traceHandler{slog.NewJSONHandler(w, &slog.HandlerOptions{
 		AddSource: true,
-	})
+	})}
 	defaultLogger = slog.New(handler)
 	slog.SetDefault(defaultLogger)
 
@@ -27,7 +49,7 @@ func Init(w io.Writer) {
 	log.SetFlags(0)
 }
 
-func logWithCaller(level slog.Level, msg string, args ...slog.Attr) {
+func logWithCaller(ctx context.Context, level slog.Level, msg string, args ...slog.Attr) {
 	if defaultLogger == nil {
 		return
 	}
@@ -40,25 +62,45 @@ func logWithCaller(level slog.Level, msg string, args ...slog.Attr) {
 	for _, attr := range args {
 		r.AddAttrs(attr)
 	}
-	_ = defaultLogger.Handler().Handle(context.Background(), r)
+	_ = defaultLogger.Handler().Handle(ctx, r)
 }
 
 // Infof 普通信息日志
 func Infof(format string, v ...any) {
-	logWithCaller(slog.LevelInfo, fmt.Sprintf(format, v...))
+	logWithCaller(context.Background(), slog.LevelInfo, fmt.Sprintf(format, v...))
 }
 
 // Errorf 错误日志
 func Errorf(format string, v ...any) {
-	logWithCaller(slog.LevelError, fmt.Sprintf(format, v...))
+	logWithCaller(context.Background(), slog.LevelError, fmt.Sprintf(format, v...))
 }
 
 // Toolf 工具调用相关日志
 func Toolf(toolName string, format string, v ...any) {
-	logWithCaller(slog.LevelInfo, fmt.Sprintf(format, v...), slog.String("category", "tool"), slog.String("tool_name", toolName))
+	logWithCaller(context.Background(), slog.LevelInfo, fmt.Sprintf(format, v...), slog.String("category", "tool"), slog.String("tool_name", toolName))
 }
 
 // APIf 外部 API 调用相关日志
 func APIf(apiName string, format string, v ...any) {
-	logWithCaller(slog.LevelInfo, fmt.Sprintf(format, v...), slog.String("category", "api"), slog.String("api_name", apiName))
+	logWithCaller(context.Background(), slog.LevelInfo, fmt.Sprintf(format, v...), slog.String("category", "api"), slog.String("api_name", apiName))
+}
+
+// InfofCtx 带 context 的信息日志,自动注入 trace_id。
+func InfofCtx(ctx context.Context, format string, v ...any) {
+	logWithCaller(ctx, slog.LevelInfo, fmt.Sprintf(format, v...))
+}
+
+// ErrorfCtx 带 context 的错误日志,自动注入 trace_id。
+func ErrorfCtx(ctx context.Context, format string, v ...any) {
+	logWithCaller(ctx, slog.LevelError, fmt.Sprintf(format, v...))
+}
+
+// ToolfCtx 带 context 的工具调用日志,自动注入 trace_id。
+func ToolfCtx(ctx context.Context, toolName string, format string, v ...any) {
+	logWithCaller(ctx, slog.LevelInfo, fmt.Sprintf(format, v...), slog.String("category", "tool"), slog.String("tool_name", toolName))
+}
+
+// APIfCtx 带 context 的外部 API 调用日志,自动注入 trace_id。
+func APIfCtx(ctx context.Context, apiName string, format string, v ...any) {
+	logWithCaller(ctx, slog.LevelInfo, fmt.Sprintf(format, v...), slog.String("category", "api"), slog.String("api_name", apiName))
 }

@@ -39,6 +39,10 @@ go test ./internal/auth -run TestName -v   # single test
 
 Health probe: `GET /health` (unauthenticated) on http/sse transports.
 
+Metrics: `GET /metrics` (unauthenticated, Prometheus text format) on http/sse transports. Exposes `xkt_tool_calls_total{tool,status}` and `xkt_tool_duration_seconds{tool}` plus default `go_*`/`process_*` collectors. Every tool call is instrumented centrally in `register.go`'s `addTool` wrapper (also emits a per-call summary log with `trace_id`, `status`, `latency`). Protect via network isolation/reverse proxy if needed — it's open like `/health`.
+
+Observability: each tool call gets a request-level `trace_id` (reused from n8n's `toolCallId`/`sessionId` when present, else generated). It's propagated via `context` and auto-attached to logs emitted through the logger's `*Ctx` helpers (`InfofCtx`/`ToolfCtx`/`APIfCtx`/`ErrorfCtx`), so a single call's tool → upstream-API → cache logs all share one `trace_id`.
+
 ## Architecture
 
 Layered, dependency-injected from `cmd/server/main.go` → `internal/server/register.go`:
@@ -51,7 +55,9 @@ cmd/server/main.go         transport selection (stdio | sse | http), auth wiring
     ├── internal/tools     MCP tool definitions, JSON schemas, handlers; talks only to *Service
     ├── internal/model     Upstream response DTOs
     ├── internal/auth      Bearer middleware for http/sse (see below)
-    └── internal/logger    Tagged log.Printf wrappers ([INFO]/[ERROR]/[TOOL:x]/[API:x])
+    ├── internal/metrics   Prometheus collectors + /metrics handler (per-tool calls/errors/latency)
+    ├── internal/trace     Request-level trace id (ctx propagation; reuses n8n toolCallId/sessionId)
+    └── internal/logger    slog wrappers; *Ctx variants auto-inject trace_id from context
 ```
 
 When adding a new tool, follow the existing flow: define args struct embedding `CommonArgs` → `*Tool()` returning `mcp.Tool` with `publicSchema[Args](envelopeFields)` → `*Handler(svc)` closure → register in `internal/server/register.go`.

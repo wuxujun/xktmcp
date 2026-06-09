@@ -154,10 +154,10 @@ func rewriteQuerySemantic(ctx context.Context, session *mcp.ServerSession, query
 			// 客户端没实现 sampling:属预期内的能力缺失,只在首次记一条 INFO,
 			// 并置标志使后续调用直接走本地改写。
 			if samplingUnsupported.CompareAndSwap(false, true) {
-				logger.Infof("[RAG] 客户端不支持 MCP sampling(Method not found),本进程后续查询改写将直接使用本地规则")
+				logger.InfofCtx(ctx, "[RAG] 客户端不支持 MCP sampling(Method not found),本进程后续查询改写将直接使用本地规则")
 			}
 		} else {
-			logger.Errorf("[RAG] LLM semantic rewrite query failed: %v, falling back to local rewrite", err)
+			logger.ErrorfCtx(ctx, "[RAG] LLM semantic rewrite query failed: %v, falling back to local rewrite", err)
 		}
 		return rewriteQuery(query)
 	}
@@ -169,7 +169,7 @@ func rewriteQuerySemantic(ctx context.Context, session *mcp.ServerSession, query
 	if textContent, ok := res.Content.(*mcp.TextContent); ok {
 		rewritten := strings.TrimSpace(textContent.Text)
 		if rewritten != "" {
-			logger.Infof("[RAG] LLM semantic rewrite success: %s -> %s", query, rewritten)
+			logger.InfofCtx(ctx, "[RAG] LLM semantic rewrite success: %s -> %s", query, rewritten)
 			return rewritten
 		}
 	}
@@ -180,13 +180,13 @@ func rewriteQuerySemantic(ctx context.Context, session *mcp.ServerSession, query
 		if err := json.Unmarshal(data, &rawMap); err == nil {
 			if textVal, found := rawMap["text"].(string); found && textVal != "" {
 				rewritten := strings.TrimSpace(textVal)
-				logger.Infof("[RAG] LLM semantic rewrite success (parsed via JSON): %s -> %s", query, rewritten)
+				logger.InfofCtx(ctx, "[RAG] LLM semantic rewrite success (parsed via JSON): %s -> %s", query, rewritten)
 				return rewritten
 			}
 		}
 	}
 
-	logger.Errorf("[RAG] LLM semantic rewrite returned unexpected content type: %T, falling back", res.Content)
+	logger.ErrorfCtx(ctx, "[RAG] LLM semantic rewrite returned unexpected content type: %T, falling back", res.Content)
 	return rewriteQuery(query)
 }
 
@@ -194,14 +194,14 @@ func RagSearchHandler(
 	svc *service.RagService,
 ) func(context.Context, *mcp.CallToolRequest, RagSearchArgs) (*mcp.CallToolResult, any, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, args RagSearchArgs) (*mcp.CallToolResult, any, error) {
-		logger.Toolf("rag_search", "参数: %+v", args)
+		logger.ToolfCtx(ctx, "rag_search", "参数: %+v", args)
 
 		cacheKey := fmt.Sprintf("rag:search:%s:%s:%d:%.4f:%t:%t:%t",
 			args.UserID, args.Query, args.TopK, args.MinScore, args.Rewrite, args.IncludeSources, args.IncludeChunks)
 
 		if val, ok := ragCache.Get(cacheKey); ok {
 			cached := val.(ragCacheItem)
-			logger.Infof("[Cache] rag_search hit cache: query=%s", args.Query)
+			logger.InfofCtx(ctx, "[Cache] rag_search hit cache: query=%s", args.Query)
 
 			// Copy and update cache hit metadata
 			response := cached.response
