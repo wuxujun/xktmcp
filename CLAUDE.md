@@ -43,6 +43,11 @@ Metrics: `GET /metrics` (unauthenticated, Prometheus text format) on http/sse tr
 
 Observability: each tool call gets a request-level `trace_id` (reused from n8n's `toolCallId`/`sessionId` when present, else generated). It's propagated via `context` and auto-attached to logs emitted through the logger's `*Ctx` helpers (`InfofCtx`/`ToolfCtx`/`APIfCtx`/`ErrorfCtx`), so a single call's tool → upstream-API → cache logs all share one `trace_id`.
 
+PII audit & redaction (`internal/pii`): the `addTool` wrapper writes a structured **audit log** per call (`category:"audit"`) recording `querier` (the n8n userId), `tool`, masked `subject` (the queried name/id/phone), `status`, `latency_ms`, `trace_id` — answering "who queried whom". Redaction has two scopes:
+
+- **Responses** (LLM-facing): tool handlers run `pii.RedactJSON` over results, masking phone (`1[3-9]\d{9}`) and ID-card (15/18-digit) patterns while **keeping** `id`/`smp_id` identifiers and names (the query chain `student_search → student_order` and answer quality depend on them). Cached results are stored already-redacted.
+- **Logs/audit**: handler entry logs no longer dump `%+v` of args (which leaked the raw query); they log `querier` + `pii.MaskSubject(query)`. `MaskSubject` masks phone/idcard, and partial-masks bare identifiers/names (rune-safe). Regex-based redaction may over-mask non-PII numbers that happen to be 11/15/18 digits — a deliberate safety bias.
+
 ## Architecture
 
 Layered, dependency-injected from `cmd/server/main.go` → `internal/server/register.go`:
@@ -57,6 +62,7 @@ cmd/server/main.go         transport selection (stdio | sse | http), auth wiring
     ├── internal/auth      Bearer middleware for http/sse (see below)
     ├── internal/metrics   Prometheus collectors + /metrics handler (per-tool calls/errors/latency)
     ├── internal/trace     Request-level trace id (ctx propagation; reuses n8n toolCallId/sessionId)
+    ├── internal/pii       PII redaction (phone/idcard masking) + identifier partial-masking
     └── internal/logger    slog wrappers; *Ctx variants auto-inject trace_id from context
 ```
 

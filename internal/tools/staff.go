@@ -2,11 +2,11 @@ package tools
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/wuxujun/xktmcp/internal/logger"
+	"github.com/wuxujun/xktmcp/internal/pii"
 	"github.com/wuxujun/xktmcp/internal/service"
 )
 
@@ -14,6 +14,9 @@ type StaffSearchArgs struct {
 	CommonArgs
 	Query string `json:"query" jsonschema:"查询关键字，可以输入员工姓名、工号、教师、校区、院系或课程等模糊关键字"`
 }
+
+// AuditSubject 返回被查询主体(供审计记录,会在上层脱敏后落日志)。
+func (a StaffSearchArgs) AuditSubject() string { return a.Query }
 
 func StaffSearchTool() *mcp.Tool {
 	return &mcp.Tool{
@@ -27,7 +30,7 @@ func StaffSearchHandler(
 	svc *service.StaffService,
 ) func(context.Context, *mcp.CallToolRequest, StaffSearchArgs) (*mcp.CallToolResult, any, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, args StaffSearchArgs) (*mcp.CallToolResult, any, error) {
-		logger.ToolfCtx(ctx, "staff_search", "参数: %+v", args)
+		logger.ToolfCtx(ctx, "staff_search", "querier=%s subject=%s", args.UserID, pii.MaskSubject(args.Query))
 
 		cacheKey := "staff:search:" + args.Query
 		if val, ok := sharedCache.Get(cacheKey); ok {
@@ -46,13 +49,13 @@ func StaffSearchHandler(
 			}, nil, nil
 		}
 
-		data, _ := json.MarshalIndent(items, "", "  ")
+		text, redacted := pii.RedactJSON(items)
 		res := &mcp.CallToolResult{
 			Content: []mcp.Content{
-				&mcp.TextContent{Text: string(data)},
+				&mcp.TextContent{Text: text},
 			},
 		}
-		structured := map[string]any{"items": items}
+		structured := map[string]any{"items": redacted}
 		// 员工/机构信息相对稳定,沿用与 student 查询一致的 60s TTL。
 		sharedCache.Set(cacheKey, toolResultItem{result: res, data: structured}, studentQueryTTL)
 		return res, structured, nil

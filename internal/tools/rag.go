@@ -12,6 +12,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/wuxujun/xktmcp/internal/logger"
+	"github.com/wuxujun/xktmcp/internal/pii"
 	"github.com/wuxujun/xktmcp/internal/service"
 )
 
@@ -31,6 +32,9 @@ type RagSearchArgs struct {
 	IncludeSources bool    `json:"include_sources" jsonschema:"结果中是否包含源文档级信息（如文档名、链接），默认 true"`
 	IncludeChunks  bool    `json:"include_chunks" jsonschema:"结果中是否包含具体切片文本内容，默认 true"`
 }
+
+// AuditSubject 返回被查询主体(供审计记录,会在上层脱敏后落日志)。
+func (a RagSearchArgs) AuditSubject() string { return a.Query }
 
 type SearchStrategy struct {
 	Rewritten bool    `json:"rewritten"`
@@ -194,7 +198,7 @@ func RagSearchHandler(
 	svc *service.RagService,
 ) func(context.Context, *mcp.CallToolRequest, RagSearchArgs) (*mcp.CallToolResult, any, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, args RagSearchArgs) (*mcp.CallToolResult, any, error) {
-		logger.ToolfCtx(ctx, "rag_search", "参数: %+v", args)
+		logger.ToolfCtx(ctx, "rag_search", "querier=%s subject=%s top_k=%d rewrite=%t", args.UserID, pii.MaskSubject(args.Query), args.TopK, args.Rewrite)
 
 		cacheKey := fmt.Sprintf("rag:search:%s:%s:%d:%.4f:%t:%t:%t",
 			args.UserID, args.Query, args.TopK, args.MinScore, args.Rewrite, args.IncludeSources, args.IncludeChunks)
@@ -241,7 +245,8 @@ func RagSearchHandler(
 
 		var contextParts []string
 		for i, item := range items {
-			part := fmt.Sprintf("## 片段%d\n标题: %s\n内容: %s", i+1, item.Title, item.Content)
+			// 知识库正文也过一遍脱敏(掩手机号/证件号),与学员数据响应口径一致。
+			part := fmt.Sprintf("## 片段%d\n标题: %s\n内容: %s\n来源: %s", i+1, item.Title, pii.Redact(item.Content), item.Url)
 			contextParts = append(contextParts, part)
 		}
 		contextStr := strings.Join(contextParts, "\n\n")
@@ -272,7 +277,7 @@ func RagSearchHandler(
 				Title:   item.Title,
 				URL:     item.Url,
 				Score:   item.Score,
-				Content: item.Content,
+				Content: pii.Redact(item.Content),
 			})
 		}
 

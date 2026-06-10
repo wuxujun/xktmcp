@@ -2,12 +2,12 @@ package tools
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/wuxujun/xktmcp/internal/logger"
+	"github.com/wuxujun/xktmcp/internal/pii"
 	"github.com/wuxujun/xktmcp/internal/service"
 )
 
@@ -43,20 +43,33 @@ func (c CommonArgs) CorrelationID() string {
 	return c.SessionID
 }
 
+// Querier 返回发起本次查询的主体(n8n 用户 id),用于审计「谁查的」。
+// 同样经 CommonArgs 提升到各 Args 类型。
+func (c CommonArgs) Querier() string { return c.UserID }
+
 type StudentSearchArgs struct {
 	CommonArgs
 	Query string `json:"query" jsonschema:"查询关键字，可以输入学员姓名、手机号等模糊信息"`
 }
+
+// AuditSubject 返回被查询主体(供审计记录,会在上层脱敏后落日志)。
+func (a StudentSearchArgs) AuditSubject() string { return a.Query }
 
 type StudentQueryByIDArgs struct {
 	CommonArgs
 	Query string `json:"query" jsonschema:"精确的学员 ID (对应 id 或 smp_id)。若只有姓名，必须先用 student_search 工具查询获取 ID"`
 }
 
+// AuditSubject 返回被查询主体(供审计记录,会在上层脱敏后落日志)。
+func (a StudentQueryByIDArgs) AuditSubject() string { return a.Query }
+
 type StudentGetArgs struct {
 	CommonArgs
 	ID string `json:"id" jsonschema:"学员的唯一 ID (对应 id 或 smp_id)"`
 }
+
+// AuditSubject 返回被查询主体(供审计记录,会在上层脱敏后落日志)。
+func (a StudentGetArgs) AuditSubject() string { return a.ID }
 
 func StudentSearchTool() *mcp.Tool {
 	return &mcp.Tool{
@@ -94,7 +107,7 @@ func StudentSearchHandler(
 	svc *service.StudentService,
 ) func(context.Context, *mcp.CallToolRequest, StudentSearchArgs) (*mcp.CallToolResult, any, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, args StudentSearchArgs) (*mcp.CallToolResult, any, error) {
-		logger.ToolfCtx(ctx, "student_search", "参数: %+v", args)
+		logger.ToolfCtx(ctx, "student_search", "querier=%s subject=%s", args.UserID, pii.MaskSubject(args.Query))
 
 		cacheKey := "student:search:" + args.Query
 		if val, ok := studentCache.Get(cacheKey); ok {
@@ -113,13 +126,13 @@ func StudentSearchHandler(
 			}, nil, nil
 		}
 
-		data, _ := json.MarshalIndent(items, "", "  ")
+		text, redacted := pii.RedactJSON(items)
 		res := &mcp.CallToolResult{
 			Content: []mcp.Content{
-				&mcp.TextContent{Text: string(data)},
+				&mcp.TextContent{Text: text},
 			},
 		}
-		structured := map[string]any{"items": items}
+		structured := map[string]any{"items": redacted}
 		studentCache.Set(cacheKey, toolResultItem{result: res, data: structured}, studentQueryTTL)
 		return res, structured, nil
 	}
@@ -129,7 +142,7 @@ func StudentOrderHandler(
 	svc *service.StudentService,
 ) func(context.Context, *mcp.CallToolRequest, StudentQueryByIDArgs) (*mcp.CallToolResult, any, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, args StudentQueryByIDArgs) (*mcp.CallToolResult, any, error) {
-		logger.ToolfCtx(ctx, "student_order", "参数: %+v", args)
+		logger.ToolfCtx(ctx, "student_order", "querier=%s subject=%s", args.UserID, pii.MaskSubject(args.Query))
 
 		cacheKey := "student:order:" + args.Query
 		if val, ok := studentCache.Get(cacheKey); ok {
@@ -148,13 +161,13 @@ func StudentOrderHandler(
 			}, nil, nil
 		}
 
-		data, _ := json.MarshalIndent(items, "", "  ")
+		text, redacted := pii.RedactJSON(items)
 		res := &mcp.CallToolResult{
 			Content: []mcp.Content{
-				&mcp.TextContent{Text: string(data)},
+				&mcp.TextContent{Text: text},
 			},
 		}
-		structured := map[string]any{"items": items}
+		structured := map[string]any{"items": redacted}
 		studentCache.Set(cacheKey, toolResultItem{result: res, data: structured}, studentQueryTTL)
 		return res, structured, nil
 	}
@@ -164,7 +177,7 @@ func StudentExamHandler(
 	svc *service.StudentService,
 ) func(context.Context, *mcp.CallToolRequest, StudentQueryByIDArgs) (*mcp.CallToolResult, any, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, args StudentQueryByIDArgs) (*mcp.CallToolResult, any, error) {
-		logger.ToolfCtx(ctx, "student_exam", "参数: %+v", args)
+		logger.ToolfCtx(ctx, "student_exam", "querier=%s subject=%s", args.UserID, pii.MaskSubject(args.Query))
 
 		cacheKey := "student:exam:" + args.Query
 		if val, ok := studentCache.Get(cacheKey); ok {
@@ -183,13 +196,13 @@ func StudentExamHandler(
 			}, nil, nil
 		}
 
-		data, _ := json.MarshalIndent(items, "", "  ")
+		text, redacted := pii.RedactJSON(items)
 		res := &mcp.CallToolResult{
 			Content: []mcp.Content{
-				&mcp.TextContent{Text: string(data)},
+				&mcp.TextContent{Text: text},
 			},
 		}
-		structured := map[string]any{"items": items}
+		structured := map[string]any{"items": redacted}
 		studentCache.Set(cacheKey, toolResultItem{result: res, data: structured}, studentQueryTTL)
 		return res, structured, nil
 	}
@@ -199,7 +212,7 @@ func StudentGetHandler(
 	svc *service.StudentService,
 ) func(context.Context, *mcp.CallToolRequest, StudentGetArgs) (*mcp.CallToolResult, any, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, args StudentGetArgs) (*mcp.CallToolResult, any, error) {
-		logger.ToolfCtx(ctx, "student_get", "参数: %+v", args)
+		logger.ToolfCtx(ctx, "student_get", "querier=%s subject=%s", args.UserID, pii.MaskSubject(args.ID))
 
 		cacheKey := "student:get:" + args.ID
 		if val, ok := studentCache.Get(cacheKey); ok {
@@ -218,14 +231,14 @@ func StudentGetHandler(
 			}, nil, nil
 		}
 
-		data, _ := json.MarshalIndent(item, "", "  ")
+		text, redacted := pii.RedactJSON(item)
 		res := &mcp.CallToolResult{
 			Content: []mcp.Content{
-				&mcp.TextContent{Text: string(data)},
+				&mcp.TextContent{Text: text},
 			},
 		}
 
-		studentCache.Set(cacheKey, toolResultItem{result: res, data: item}, 5*time.Minute)
-		return res, item, nil
+		studentCache.Set(cacheKey, toolResultItem{result: res, data: redacted}, 5*time.Minute)
+		return res, redacted, nil
 	}
 }

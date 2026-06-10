@@ -104,3 +104,15 @@ func ToolfCtx(ctx context.Context, toolName string, format string, v ...any) {
 func APIfCtx(ctx context.Context, apiName string, format string, v ...any) {
 	logWithCaller(ctx, slog.LevelInfo, fmt.Sprintf(format, v...), slog.String("category", "api"), slog.String("api_name", apiName))
 }
+
+// AuditCtx 写一条结构化审计日志(category=audit),记录「谁查了谁、用哪个工具、结果如何」。
+// fields 里的键值会作为独立 JSON 字段输出;trace_id 由 context 自动注入。
+// 调用方须确保 fields 中不含未脱敏的明文 PII(手机号/证件号应先经 pii 包处理)。
+func AuditCtx(ctx context.Context, fields map[string]any) {
+	attrs := make([]slog.Attr, 0, len(fields)+1)
+	attrs = append(attrs, slog.String("category", "audit"))
+	for k, v := range fields {
+		attrs = append(attrs, slog.Any(k, v))
+	}
+	logWithCaller(ctx, slog.LevelInfo, "audit", attrs...)
+}
