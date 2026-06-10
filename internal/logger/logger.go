@@ -39,6 +39,33 @@ func (h traceHandler) WithGroup(name string) slog.Handler {
 
 const modulePrefix = "github.com/wuxujun/xktmcp/"
 
+// cleanSourceFile cleans absolute path prefixes and module path prefixes to ensure relative paths.
+func cleanSourceFile(file string, wd string, modulePrefix string) string {
+	if wd != "" {
+		if trimmed, ok := strings.CutPrefix(file, wd); ok {
+			file = trimmed
+		}
+	}
+	// Trim module prefix from file path (useful when built with -trimpath)
+	file = strings.TrimPrefix(file, modulePrefix)
+
+	// If the file path is still absolute (e.g., built without -trimpath and run in a different directory),
+	// try to trim the absolute prefix up to the project folder name.
+	if filepath.IsAbs(file) {
+		projName := filepath.Base(strings.TrimSuffix(modulePrefix, "/"))
+		if projName != "" && projName != "." {
+			for _, sep := range []string{"/", "\\"} {
+				searchStr := sep + projName + sep
+				if idx := strings.LastIndex(file, searchStr); idx != -1 {
+					file = file[idx+len(searchStr):]
+					break
+				}
+			}
+		}
+	}
+	return file
+}
+
 // Init 初始化全局日志输出并重定向标准 log
 func Init(w io.Writer) {
 	wd, _ := os.Getwd()
@@ -52,11 +79,7 @@ func Init(w io.Writer) {
 		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
 			if a.Key == slog.SourceKey {
 				if source, ok := a.Value.Any().(*slog.Source); ok {
-					if wd != "" {
-						if file, ok := strings.CutPrefix(source.File, wd); ok {
-							source.File = file
-						}
-					}
+					source.File = cleanSourceFile(source.File, wd, modulePrefix)
 					source.Function = strings.TrimPrefix(source.Function, modulePrefix)
 				}
 			}

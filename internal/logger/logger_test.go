@@ -72,3 +72,48 @@ func TestRelativeSourcePath(t *testing.T) {
 	}
 }
 
+func TestCleanSourceFile(t *testing.T) {
+	modulePrefix := "github.com/wuxujun/xktmcp/"
+
+	tests := []struct {
+		name     string
+		file     string
+		wd       string
+		expected string
+	}{
+		{
+			name:     "Built locally, run in same directory (no -trimpath)",
+			file:     "/Users/xujunwu/Documents/IDEAProject/xktmcp/cmd/server/main.go",
+			wd:       "/Users/xujunwu/Documents/IDEAProject/xktmcp/",
+			expected: "cmd/server/main.go",
+		},
+		{
+			name:     "Built locally, run in different directory (no -trimpath)",
+			file:     "/Users/xujunwu/Documents/IDEAProject/xktmcp/cmd/server/main.go",
+			wd:       "/app/",
+			expected: "cmd/server/main.go",
+		},
+		{
+			name:     "Built with -trimpath",
+			file:     "github.com/wuxujun/xktmcp/cmd/server/main.go",
+			wd:       "/app/",
+			expected: "cmd/server/main.go",
+		},
+		{
+			name:     "Standard library or external dependency",
+			file:     "/usr/local/go/src/net/http/server.go",
+			wd:       "/app/",
+			expected: "/usr/local/go/src/net/http/server.go",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			actual := cleanSourceFile(tt.file, tt.wd, modulePrefix)
+			if actual != tt.expected {
+				t.Errorf("expected %q, got %q", tt.expected, actual)
+			}
+		})
+	}
+}
+

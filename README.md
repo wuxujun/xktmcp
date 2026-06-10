@@ -13,6 +13,6 @@ go run ./cmd/server/main.go -transport=http -port=8081 -debug
 ```
 
 ```bash
-# 打包
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags=jsoniter -ldflags="-s -w" -o mcp-server ./cmd/server/main.go
+# 打包 (使用 -trimpath 移除编译时的绝对文件路径)
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -tags=jsoniter -ldflags="-s -w" -o mcp-server ./cmd/server/main.go
 ```

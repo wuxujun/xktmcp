@@ -18,8 +18,8 @@ go run ./cmd/server/main.go
 go run ./cmd/server/main.go -transport=http -port=8081
 go run ./cmd/server/main.go -transport=sse  -port=8081
 
-# Build a Linux release binary
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags=jsoniter -ldflags="-s -w" -o mcp-server ./cmd/server/main.go
+# Build a Linux release binary (using -trimpath to remove compile-time absolute filesystem paths)
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -tags=jsoniter -ldflags="-s -w" -o mcp-server ./cmd/server/main.go
 
 # Tests
 go test ./...
