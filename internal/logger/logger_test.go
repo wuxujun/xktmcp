@@ -53,3 +53,22 @@ func TestToolfCtxAttributes(t *testing.T) {
 		}
 	}
 }
+
+// 验证日志中输出的 source file 路径与 function 名称为非绝对/带前缀路径 (相对路径)
+func TestRelativeSourcePath(t *testing.T) {
+	var buf bytes.Buffer
+	Init(&buf)
+
+	Infof("test relative path")
+
+	out := buf.String()
+	// 日志中的 source file 应该为相对路径，例如 "internal/logger/logger_test.go" 或 "logger_test.go"
+	if !strings.Contains(out, `"file":"internal/logger/logger_test.go"`) && !strings.Contains(out, `"file":"logger_test.go"`) {
+		t.Errorf("期望得到相对的 source file 路径, 实际输出: %s", out)
+	}
+	// 日志中的 function 应该移除了 module 前缀，为 "internal/logger.TestRelativeSourcePath"
+	if !strings.Contains(out, `"function":"internal/logger.TestRelativeSourcePath"`) {
+		t.Errorf("期望得到相对的 function 路径, 实际输出: %s", out)
+	}
+}
+

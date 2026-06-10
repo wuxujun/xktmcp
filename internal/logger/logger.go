@@ -6,7 +6,10 @@ import (
 	"io"
 	"log"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/wuxujun/xktmcp/internal/trace"
@@ -34,11 +37,31 @@ func (h traceHandler) WithGroup(name string) slog.Handler {
 	return traceHandler{h.Handler.WithGroup(name)}
 }
 
+const modulePrefix = "github.com/wuxujun/xktmcp/"
+
 // Init 初始化全局日志输出并重定向标准 log
 func Init(w io.Writer) {
+	wd, _ := os.Getwd()
+	if wd != "" && !strings.HasSuffix(wd, string(filepath.Separator)) {
+		wd += string(filepath.Separator)
+	}
+
 	// 启用 Source 选项以输出源文件和行号
 	handler := traceHandler{slog.NewJSONHandler(w, &slog.HandlerOptions{
 		AddSource: true,
+		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
+			if a.Key == slog.SourceKey {
+				if source, ok := a.Value.Any().(*slog.Source); ok {
+					if wd != "" {
+						if file, ok := strings.CutPrefix(source.File, wd); ok {
+							source.File = file
+						}
+					}
+					source.Function = strings.TrimPrefix(source.Function, modulePrefix)
+				}
+			}
+			return a
+		},
 	})}
 	defaultLogger = slog.New(handler)
 	slog.SetDefault(defaultLogger)
