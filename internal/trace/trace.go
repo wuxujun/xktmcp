@@ -9,6 +9,7 @@ import (
 )
 
 type ctxKey struct{}
+type userIDKey struct{}
 
 // NewID 生成 16 位十六进制(8 字节)随机 trace id。
 // crypto/rand 极少失败,失败时退回全零 id(仍可用于串联,只是不唯一)。
@@ -49,4 +50,20 @@ func EnsureID(ctx context.Context, preferred ...string) (context.Context, string
 	}
 	id := NewID()
 	return WithID(ctx, id), id
+}
+
+// WithUserID 把来自 HTTP query param 的 userId 注入 context。
+func WithUserID(ctx context.Context, uid string) context.Context {
+	return context.WithValue(ctx, userIDKey{}, uid)
+}
+
+// UserIDFromContext 取出 context 中的 userId;不存在返回空串。
+func UserIDFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	if v, ok := ctx.Value(userIDKey{}).(string); ok {
+		return v
+	}
+	return ""
 }

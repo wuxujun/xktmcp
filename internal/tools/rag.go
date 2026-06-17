@@ -14,6 +14,7 @@ import (
 	"github.com/wuxujun/xktmcp/internal/logger"
 	"github.com/wuxujun/xktmcp/internal/pii"
 	"github.com/wuxujun/xktmcp/internal/service"
+	"github.com/wuxujun/xktmcp/internal/trace"
 )
 
 var ragCache = sharedCache
@@ -198,6 +199,11 @@ func RagSearchHandler(
 	svc *service.RagService,
 ) func(context.Context, *mcp.CallToolRequest, RagSearchArgs) (*mcp.CallToolResult, any, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, args RagSearchArgs) (*mcp.CallToolResult, any, error) {
+		// userId 取得优先级：工具参数中的 userId > HTTP query param 注入的 ctx 值。
+		// 这样同时兼容 n8n body 传参和 /mcp?userId=xxx URL 传参两种调用方式。
+		if args.UserID == "" {
+			args.UserID = trace.UserIDFromContext(ctx)
+		}
 		logger.ToolfCtx(ctx, "rag_search", "querier=%s subject=%s top_k=%d rewrite=%t", args.UserID, pii.MaskSubject(args.Query), args.TopK, args.Rewrite)
 
 		cacheKey := fmt.Sprintf("rag:search:%s:%s:%d:%.4f:%t:%t:%t",

@@ -20,6 +20,7 @@ import (
 	"github.com/wuxujun/xktmcp/internal/logger"
 	"github.com/wuxujun/xktmcp/internal/metrics"
 	mcp_server "github.com/wuxujun/xktmcp/internal/server"
+	"github.com/wuxujun/xktmcp/internal/trace"
 	"gopkg.in/natefinch/lumberjack.v2"
 )
 
@@ -129,7 +130,7 @@ func main() {
 		// Prometheus 指标端点(免认证,供抓取;如需保护可置于网络隔离或反代后)
 		mux.Handle("/metrics", metrics.Handler())
 		// Streamable HTTP 默认通过单一路径处理
-		mux.Handle("/mcp", finalHandler)
+		mux.Handle("/mcp", userIDMiddleware(finalHandler))
 
 		addr := fmt.Sprintf(":%d", *port)
 		logger.Infof("正在通过 Streamable HTTP 启动 xkt-mcp-server，监听地址 %s/mcp...", addr)
@@ -197,6 +198,18 @@ func envBool(key string) bool {
 	default:
 		return false
 	}
+}
+
+// userIDMiddleware 从 URL query string (?userId=xxx) 读取 userId,
+// 注入 context,使 MCP 工具处理器可通过 trace.UserIDFromContext(ctx) 获取。
+// 优先级:URL param > 已有 context 值(若未来有其他注入来源)。
+func userIDMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if uid := r.URL.Query().Get("userId"); uid != "" {
+			r = r.WithContext(trace.WithUserID(r.Context(), uid))
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // requireAuth 对网络传输(http/sse)执行 fail-closed:未配置任何认证方式则拒绝启动。
