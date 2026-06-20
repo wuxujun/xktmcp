@@ -107,9 +107,9 @@ func main() {
 		// Prometheus 指标端点(免认证,供抓取;如需保护可置于网络隔离或反代后)
 		mux.Handle("/metrics", metrics.Handler())
 		// 客户端连接 /sse 路径来建立事件流
-		mux.Handle("/sse", finalHandler)
+		mux.Handle("/sse", userIDMiddleware(finalHandler))
 		// 客户端通过 POST /messages/... 发送 JSON-RPC 消息
-		mux.Handle("/messages/", finalHandler)
+		mux.Handle("/messages/", userIDMiddleware(finalHandler))
 
 		addr := fmt.Sprintf(":%d", *port)
 		logger.Infof("正在通过 SSE 启动 xkt-student-server，监听地址 %s/sse...", addr)

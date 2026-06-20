@@ -8,6 +8,7 @@ import (
 	"github.com/wuxujun/xktmcp/internal/logger"
 	"github.com/wuxujun/xktmcp/internal/pii"
 	"github.com/wuxujun/xktmcp/internal/service"
+	"github.com/wuxujun/xktmcp/internal/trace"
 )
 
 type StaffSearchArgs struct {
@@ -30,16 +31,17 @@ func StaffSearchHandler(
 	svc *service.StaffService,
 ) func(context.Context, *mcp.CallToolRequest, StaffSearchArgs) (*mcp.CallToolResult, any, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, args StaffSearchArgs) (*mcp.CallToolResult, any, error) {
-		logger.ToolfCtx(ctx, "staff_search", "querier=%s subject=%s", args.UserID, pii.MaskSubject(args.Query))
+		userID := trace.EffectiveUserID(ctx, args.UserID)
+		logger.ToolfCtx(ctx, "staff_search", "querier=%s subject=%s", userID, pii.MaskSubject(args.Query))
 
-		cacheKey := "staff:search:" + args.Query
+		cacheKey := fmt.Sprintf("staff:search:%s:%s", userID, args.Query)
 		if val, ok := sharedCache.Get(cacheKey); ok {
 			cached := val.(toolResultItem)
 			logger.InfofCtx(ctx, "[Cache] staff_search hit cache: query=%s", args.Query)
 			return cached.result, cached.data, nil
 		}
 
-		items, err := svc.StaffSearch(ctx, args.UserID, args.Query)
+		items, err := svc.StaffSearch(ctx, userID, args.Query)
 		if err != nil {
 			return &mcp.CallToolResult{
 				Content: []mcp.Content{

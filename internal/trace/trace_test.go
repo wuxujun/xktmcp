@@ -57,3 +57,17 @@ func TestEnsureIDPrecedence(t *testing.T) {
 		t.Error("返回的 ctx 应携带新生成的 id")
 	}
 }
+
+func TestEffectiveUserIDPrecedence(t *testing.T) {
+	ctx := WithUserID(context.Background(), "ctx-user")
+
+	if got := EffectiveUserID(ctx, " arg-user "); got != "arg-user" {
+		t.Errorf("应优先使用工具入参 userId 并裁剪空白,得到 %q", got)
+	}
+	if got := EffectiveUserID(ctx, " "); got != "ctx-user" {
+		t.Errorf("入参为空时应回退到 context userId,得到 %q", got)
+	}
+	if got := EffectiveUserID(context.Background(), " "); got != "" {
+		t.Errorf("无入参且 context 无 userId 时应返回空串,得到 %q", got)
+	}
+}

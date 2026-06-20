@@ -201,13 +201,11 @@ func RagSearchHandler(
 	return func(ctx context.Context, req *mcp.CallToolRequest, args RagSearchArgs) (*mcp.CallToolResult, any, error) {
 		// userId 取得优先级：工具参数中的 userId > HTTP query param 注入的 ctx 值。
 		// 这样同时兼容 n8n body 传参和 /mcp?userId=xxx URL 传参两种调用方式。
-		if args.UserID == "" {
-			args.UserID = trace.UserIDFromContext(ctx)
-		}
-		logger.ToolfCtx(ctx, "rag_search", "querier=%s subject=%s top_k=%d rewrite=%t", args.UserID, pii.MaskSubject(args.Query), args.TopK, args.Rewrite)
+		userID := trace.EffectiveUserID(ctx, args.UserID)
+		logger.ToolfCtx(ctx, "rag_search", "querier=%s subject=%s top_k=%d rewrite=%t", userID, pii.MaskSubject(args.Query), args.TopK, args.Rewrite)
 
 		cacheKey := fmt.Sprintf("rag:search:%s:%s:%d:%.4f:%t:%t:%t",
-			args.UserID, args.Query, args.TopK, args.MinScore, args.Rewrite, args.IncludeSources, args.IncludeChunks)
+			userID, args.Query, args.TopK, args.MinScore, args.Rewrite, args.IncludeSources, args.IncludeChunks)
 
 		if val, ok := ragCache.Get(cacheKey); ok {
 			cached := val.(ragCacheItem)
@@ -227,7 +225,7 @@ func RagSearchHandler(
 		}
 
 		startTime := time.Now()
-		items, err := svc.RagSearch(ctx, args.UserID, mainQuery)
+		items, err := svc.RagSearch(ctx, userID, mainQuery)
 		latency := time.Since(startTime).Milliseconds()
 
 		if err != nil {

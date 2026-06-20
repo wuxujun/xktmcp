@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"strings"
 )
 
 type ctxKey struct{}
@@ -66,4 +67,13 @@ func UserIDFromContext(ctx context.Context) string {
 		return v
 	}
 	return ""
+}
+
+// EffectiveUserID resolves the caller user id with a single precedence rule:
+// explicit tool argument first, then the HTTP context value.
+func EffectiveUserID(ctx context.Context, explicit string) string {
+	if uid := strings.TrimSpace(explicit); uid != "" {
+		return uid
+	}
+	return strings.TrimSpace(UserIDFromContext(ctx))
 }

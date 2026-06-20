@@ -17,6 +17,7 @@ import (
 // auditable 由内嵌 CommonArgs 的工具 Args 满足:
 //   - CorrelationID/Querier 经 CommonArgs 提升;
 //   - AuditSubject 由各 Args 自身实现(返回被查询的 query/id)。
+//
 // 用于从入参里取 trace 关联 id、查询者与被查主体。
 type auditable interface {
 	CorrelationID() string
@@ -82,7 +83,7 @@ func addTool[In auditable](
 		// 审计留痕:被查主体脱敏后记录(手机号/证件号掩码,标识符部分掩码)。
 		logger.AuditCtx(ctx, map[string]any{
 			"tool":       name,
-			"querier":    in.Querier(),
+			"querier":    trace.EffectiveUserID(ctx, in.Querier()),
 			"subject":    pii.MaskSubject(in.AuditSubject()),
 			"status":     status,
 			"latency_ms": elapsed.Milliseconds(),
