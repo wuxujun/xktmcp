@@ -17,6 +17,10 @@ func NewStaffService(api *client.StaffAPI) *StaffService {
 }
 
 func (s *StaffService) StaffSearch(ctx context.Context, userId, query string) ([]model.Staff, error) {
+	userId = strings.TrimSpace(userId)
+	if userId == "" {
+		return nil, ErrMissingUserID
+	}
 	query = strings.TrimSpace(query)
 	if query == "" {
 		return nil, ErrInvalidQuery

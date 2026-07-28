@@ -10,8 +10,9 @@ import (
 )
 
 var (
-	ErrInvalidQuery = errors.New("query must not be empty")
-	ErrInvalidID    = errors.New("id must not be empty")
+	ErrInvalidQuery  = errors.New("query must not be empty")
+	ErrInvalidID     = errors.New("id must not be empty")
+	ErrMissingUserID = errors.New("userId must not be empty")
 )
 
 type StudentService struct {
@@ -22,12 +23,12 @@ func NewStudentService(api *client.StudentAPI) *StudentService {
 	return &StudentService{api: api}
 }
 
-func (s *StudentService) Search(ctx context.Context, query string) ([]model.Student, error) {
+func (s *StudentService) Search(ctx context.Context, query string, page, pageSize int) ([]model.Student, error) {
 	query = strings.TrimSpace(query)
 	if query == "" {
 		return nil, ErrInvalidQuery
 	}
-	return s.api.SearchStudents(ctx, query)
+	return s.api.SearchStudents(ctx, query, page, pageSize)
 }
 
 func (s *StudentService) SearchOrders(ctx context.Context, query string) ([]model.StudentOrder, error) {

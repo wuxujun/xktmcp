@@ -25,6 +25,7 @@ type StudentAPI struct {
 	baseURL  string
 	apiToken string
 	client   *http.Client
+	breaker  *CircuitBreaker
 }
 
 type searchResponse struct {
@@ -76,11 +77,13 @@ func NewStudentAPI(cfg Config) *StudentAPI {
 		baseURL:  cfg.BaseURL,
 		apiToken: cfg.APIToken,
 		client:   &http.Client{Timeout: cfg.Timeout},
+		breaker:  studentBreaker,
 	}
 }
 
-func (a *StudentAPI) SearchStudents(ctx context.Context, query string) ([]model.Student, error) {
-	u := fmt.Sprintf("%s/api/student?query=%s", a.baseURL, url.QueryEscape(query))
+func (a *StudentAPI) SearchStudents(ctx context.Context, query string, page, pageSize int) ([]model.Student, error) {
+	u := fmt.Sprintf("%s/api/student?query=%s&page=%d&page_size=%d",
+		a.baseURL, url.QueryEscape(query), page, pageSize)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
@@ -89,7 +92,7 @@ func (a *StudentAPI) SearchStudents(ctx context.Context, query string) ([]model.
 	a.applyHeaders(req)
 
 	logger.APIfCtx(ctx, "SearchStudents", "发起请求: %s", u)
-	resp, err := doRequestWithRetry(ctx, a.client, req, "SearchStudents")
+	resp, err := doRequestWithRetry(ctx, a.client, req, "SearchStudents", a.breaker)
 	if err != nil {
 		return nil, err
 	}
@@ -117,7 +120,7 @@ func (a *StudentAPI) SearchOrders(ctx context.Context, query string) ([]model.St
 	a.applyHeaders(req)
 
 	logger.APIfCtx(ctx, "SearchOrders", "发起请求: %s", u)
-	resp, err := doRequestWithRetry(ctx, a.client, req, "SearchOrders")
+	resp, err := doRequestWithRetry(ctx, a.client, req, "SearchOrders", a.breaker)
 	if err != nil {
 		return nil, err
 	}
@@ -145,7 +148,7 @@ func (a *StudentAPI) SearchExam(ctx context.Context, query string) ([]model.Stud
 	a.applyHeaders(req)
 
 	logger.APIfCtx(ctx, "SearchExam", "发起请求: %s", u)
-	resp, err := doRequestWithRetry(ctx, a.client, req, "SearchExam")
+	resp, err := doRequestWithRetry(ctx, a.client, req, "SearchExam", a.breaker)
 	if err != nil {
 		return nil, err
 	}
@@ -173,7 +176,7 @@ func (a *StudentAPI) GetStudent(ctx context.Context, id string) (*model.Student,
 	a.applyHeaders(req)
 
 	logger.APIfCtx(ctx, "GetStudent", "发起请求: %s", u)
-	resp, err := doRequestWithRetry(ctx, a.client, req, "GetStudent")
+	resp, err := doRequestWithRetry(ctx, a.client, req, "GetStudent", a.breaker)
 	if err != nil {
 		return nil, err
 	}

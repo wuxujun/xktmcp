@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/wuxujun/xktmcp/internal/logger"
+	"github.com/wuxujun/xktmcp/internal/metrics"
 )
 
 // ErrCircuitOpen 在熔断器处于打开状态、快速失败时返回。调用方可用 errors.Is 判定,
@@ -199,6 +200,7 @@ func (cb *CircuitBreaker) transitionLocked(to circuitState) {
 	case stateClosed:
 		logger.Infof("[CB:%s] 熔断器关闭(从 %s):上游已恢复,放量", cb.name, from)
 	}
+	metrics.ObserveCircuitBreakerTransition(cb.name, to.String())
 }
 
 // reset 仅供测试:把熔断器恢复到初始 Closed 状态。
@@ -215,3 +217,10 @@ func (cb *CircuitBreaker) reset() {
 // upstreamBreaker 是所有上游 API 调用共享的熔断器(同一后端 BASE_URL)。
 // 用合理的硬编码默认值,无需 env;如需按环境调参,可后续在 main 装配后注入。
 var upstreamBreaker = NewCircuitBreaker("upstream", defaultFailureThreshold, defaultCooldown, defaultHalfOpenProbes)
+
+// 针对不同业务模块的独立熔断器，防止某一模块故障导致其它模块不可用（服务隔离）
+var (
+	studentBreaker = NewCircuitBreaker("student", defaultFailureThreshold, defaultCooldown, defaultHalfOpenProbes)
+	ragBreaker     = NewCircuitBreaker("rag", defaultFailureThreshold, defaultCooldown, defaultHalfOpenProbes)
+	staffBreaker   = NewCircuitBreaker("staff", defaultFailureThreshold, defaultCooldown, defaultHalfOpenProbes)
+)

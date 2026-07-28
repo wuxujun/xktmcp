@@ -83,6 +83,12 @@ func main() {
 	}
 	authenticator := auth.New(buildAuthConfig(localToken))
 
+	// 将 MCPMiddleware 注册到 MCP Server：
+	// MCP SDK 会 detach HTTP request context，所以在 HTTP 中间件注入的 userID
+	// 在 tool handler 里取不到。MCPMiddleware 在 MCP 消息层重新补注，
+	// 使 trace.EffectiveUserID(ctx, args.UserID) 能透明取到远程验证返回的 userID。
+	s.AddReceivingMiddleware(authenticator.MCPMiddleware())
+
 	switch *transport {
 	case "stdio":
 		logger.Infof("正在通过 stdio 启动 xkt-student-server...")
@@ -206,6 +212,12 @@ func envBool(key string) bool {
 func userIDMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if uid := r.URL.Query().Get("userId"); uid != "" {
+			// 校验 userId 是否包含特殊字符或超长，防范 URL 注入或 SSRF
+			if len(uid) > 128 || strings.ContainsAny(uid, "&=\r\n?#%") {
+				logger.Errorf("[Auth] userId 包含非法字符或长度超限 (length=%d, raw=%q)", len(uid), uid)
+				http.Error(w, "invalid userId parameter", http.StatusBadRequest)
+				return
+			}
 			r = r.WithContext(trace.WithUserID(r.Context(), uid))
 		}
 		next.ServeHTTP(w, r)

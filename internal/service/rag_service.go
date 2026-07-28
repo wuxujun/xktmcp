@@ -17,6 +17,10 @@ func NewRagService(api *client.RagAPI) *RagService {
 }
 
 func (s *RagService) RagSearch(ctx context.Context, userId, query string) ([]model.Rag, error) {
+	userId = strings.TrimSpace(userId)
+	if userId == "" {
+		return nil, ErrMissingUserID
+	}
 	query = strings.TrimSpace(query)
 	if query == "" {
 		return nil, ErrInvalidQuery

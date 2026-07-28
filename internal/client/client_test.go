@@ -81,7 +81,7 @@ func TestDoRequestWithRetry(t *testing.T) {
 		defer server.Close()
 
 		req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, server.URL, nil)
-		resp, err := doRequestWithRetry(context.Background(), http.DefaultClient, req, "TestAPI")
+		resp, err := doRequestWithRetry(context.Background(), http.DefaultClient, req, "TestAPI", nil)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -108,7 +108,7 @@ func TestDoRequestWithRetry(t *testing.T) {
 		defer server.Close()
 
 		req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, server.URL, nil)
-		resp, err := doRequestWithRetry(context.Background(), http.DefaultClient, req, "TestAPI")
+		resp, err := doRequestWithRetry(context.Background(), http.DefaultClient, req, "TestAPI", nil)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -131,7 +131,7 @@ func TestDoRequestWithRetry(t *testing.T) {
 		defer server.Close()
 
 		req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, server.URL, nil)
-		resp, err := doRequestWithRetry(context.Background(), http.DefaultClient, req, "TestAPI")
+		resp, err := doRequestWithRetry(context.Background(), http.DefaultClient, req, "TestAPI", nil)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -154,7 +154,7 @@ func TestDoRequestWithRetry(t *testing.T) {
 		defer server.Close()
 
 		req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, server.URL, nil)
-		_, err := doRequestWithRetry(context.Background(), http.DefaultClient, req, "TestAPI")
+		_, err := doRequestWithRetry(context.Background(), http.DefaultClient, req, "TestAPI", nil)
 		if err == nil {
 			t.Fatal("expected failure, got success")
 		}
@@ -176,7 +176,7 @@ func TestDoRequestWithRetry(t *testing.T) {
 		// Cancel immediately to trigger context check
 		cancel()
 
-		_, err := doRequestWithRetry(ctx, http.DefaultClient, req, "TestAPI")
+		_, err := doRequestWithRetry(ctx, http.DefaultClient, req, "TestAPI", nil)
 		if err != context.Canceled {
 			t.Errorf("expected context.Canceled, got %v", err)
 		}

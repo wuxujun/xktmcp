@@ -12,6 +12,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/wuxujun/xktmcp/internal/logger"
+	"github.com/wuxujun/xktmcp/internal/metrics"
 	"github.com/wuxujun/xktmcp/internal/pii"
 	"github.com/wuxujun/xktmcp/internal/service"
 	"github.com/wuxujun/xktmcp/internal/trace"
@@ -30,8 +31,8 @@ type RagSearchArgs struct {
 	TopK           int     `json:"top_k" jsonschema:"返回的最优相似文档片段数量，默认为 5，取值范围 1-20"`
 	MinScore       float64 `json:"min_score" jsonschema:"相似度分数阈值，过滤掉低于此分数的文档片段，默认为 0.1，取值范围 0.0-1.0"`
 	Rewrite        bool    `json:"rewrite" jsonschema:"是否启用查询改写。如果用户提问不够直接、包含简称或过于含糊，设为 true 以提高检索召回率"`
-	IncludeSources bool    `json:"include_sources" jsonschema:"结果中是否包含源文档级信息（如文档名、链接），默认 true"`
-	IncludeChunks  bool    `json:"include_chunks" jsonschema:"结果中是否包含具体切片文本内容，默认 true"`
+	IncludeSources *bool   `json:"include_sources,omitempty" jsonschema:"结果中是否包含源文档级信息（如文档名、链接），默认 true"`
+	IncludeChunks  *bool   `json:"include_chunks,omitempty" jsonschema:"结果中是否包含具体切片文本内容，默认 true"`
 }
 
 // AuditSubject 返回被查询主体(供审计记录,会在上层脱敏后落日志)。
@@ -204,8 +205,17 @@ func RagSearchHandler(
 		userID := trace.EffectiveUserID(ctx, args.UserID)
 		logger.ToolfCtx(ctx, "rag_search", "querier=%s subject=%s top_k=%d rewrite=%t", userID, pii.MaskSubject(args.Query), args.TopK, args.Rewrite)
 
+		includeSources := true
+		if args.IncludeSources != nil {
+			includeSources = *args.IncludeSources
+		}
+		includeChunks := true
+		if args.IncludeChunks != nil {
+			includeChunks = *args.IncludeChunks
+		}
+
 		cacheKey := fmt.Sprintf("rag:search:%s:%s:%d:%.4f:%t:%t:%t",
-			userID, args.Query, args.TopK, args.MinScore, args.Rewrite, args.IncludeSources, args.IncludeChunks)
+			userID, args.Query, args.TopK, args.MinScore, args.Rewrite, includeSources, includeChunks)
 
 		if val, ok := ragCache.Get(cacheKey); ok {
 			cached := val.(ragCacheItem)
@@ -216,8 +226,10 @@ func RagSearchHandler(
 			response.Meta.Cached = true
 			response.Meta.LatencyMS = 0
 
+			metrics.ObserveCacheAccess("rag_search", true)
 			return cached.result, response, nil
 		}
+		metrics.ObserveCacheAccess("rag_search", false)
 
 		mainQuery := args.Query
 		if args.Rewrite {
@@ -256,33 +268,37 @@ func RagSearchHandler(
 		contextStr := strings.Join(contextParts, "\n\n")
 
 		var sources []SourceItem
-		seenURLs := make(map[string]bool)
-		for _, item := range items {
-			urlKey := item.Url
-			if urlKey == "" {
-				urlKey = item.Title
-			}
-			if !seenURLs[urlKey] {
-				seenURLs[urlKey] = true
-				sourceID := fmt.Sprintf("src_%d", len(sources)+1)
-				sources = append(sources, SourceItem{
-					SourceID: sourceID,
-					Title:    item.Title,
-					URL:      item.Url,
-					Score:    item.Score,
-				})
+		if includeSources {
+			seenURLs := make(map[string]bool)
+			for _, item := range items {
+				urlKey := item.Url
+				if urlKey == "" {
+					urlKey = item.Title
+				}
+				if !seenURLs[urlKey] {
+					seenURLs[urlKey] = true
+					sourceID := fmt.Sprintf("src_%d", len(sources)+1)
+					sources = append(sources, SourceItem{
+						SourceID: sourceID,
+						Title:    item.Title,
+						URL:      item.Url,
+						Score:    item.Score,
+					})
+				}
 			}
 		}
 
 		var chunks []ChunkItem
-		for i, item := range items {
-			chunks = append(chunks, ChunkItem{
-				ChunkID: fmt.Sprintf("chunk_%d", i+1),
-				Title:   item.Title,
-				URL:     item.Url,
-				Score:   item.Score,
-				Content: pii.Redact(item.Content),
-			})
+		if includeChunks {
+			for i, item := range items {
+				chunks = append(chunks, ChunkItem{
+					ChunkID: fmt.Sprintf("chunk_%d", i+1),
+					Title:   item.Title,
+					URL:     item.Url,
+					Score:   item.Score,
+					Content: pii.Redact(item.Content),
+				})
+			}
 		}
 
 		resp := RagSearchResponse{

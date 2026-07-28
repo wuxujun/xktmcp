@@ -12,8 +12,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
-	"encoding/json"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -23,13 +23,23 @@ import (
 	"sync"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/wuxujun/xktmcp/internal/logger"
+	"github.com/wuxujun/xktmcp/internal/trace"
 )
 
 // TenantConfig 定义多租户配置结构
+//
+// 安全说明: 强烈建议使用 token_hash 替代 token 字段:
+//   - token: 明文令牌(向后兼容保留,启动时会被立即哈希后丢弃明文)。
+//   - token_hash: 预先计算好的 SHA-256 哈希(hex 字符串),推荐方式。
+//     生成方法: echo -n 'your-token' | sha256sum
+//
+// 运行时 tenantsByToken map 仅以哈希值为 key,内存中不保留明文令牌。
 type TenantConfig struct {
 	Name         string   `json:"name"`
-	Token        string   `json:"token"`
+	Token        string   `json:"token"`         // 明文令牌(向后兼容,启动后立即哈希存储)
+	TokenHash    string   `json:"token_hash"`    // 预计算 SHA-256 哈希(推荐,优先使用)
 	AllowedTools []string `json:"allowed_tools"` // 允许调用的工具列表，"*" 表示允许所有
 	RateRPS      float64  `json:"rate_rps"`      // 租户专属限流速率 (每秒请求数)
 	RateBurst    int      `json:"rate_burst"`    // 租户专属限流突发容量
@@ -73,8 +83,20 @@ func (c Config) Enabled() bool {
 }
 
 type cacheEntry struct {
-	ok  bool
-	exp time.Time
+	ok     bool
+	exp    time.Time
+	userID string // 远程验证返回的用户 ID（可为空）
+}
+
+// ctxKey 是注入 context 的私有 key 类型，防止与其他包冲突。
+type ctxKey int
+
+const ctxKeyUserID ctxKey = iota
+
+// UserIDFromCtx 从 context 中取出远程验证返回的用户 ID；未设置时返回空字符串。
+func UserIDFromCtx(ctx context.Context) string {
+	v, _ := ctx.Value(ctxKeyUserID).(string)
+	return v
 }
 
 type tenantLimiter struct {
@@ -125,6 +147,11 @@ type Authenticator struct {
 
 	cache sync.Map // 缓存校验结果 (key: sha256_hash_string, value: cacheEntry)
 
+	// sessionUserID 把 MCP sessionID 映射到远程验证返回的 userID。
+	// MCP SDK 会 detach HTTP request context，HTTP 中间件注入的 context value
+	// 无法传递到 tool handler；通过此 map + MCPMiddleware 在 MCP 消息层面补注。
+	sessionUserID sync.Map // key: sessionID(string) → value: userID(string)
+
 	tenantsByToken map[string]*Tenant
 }
 
@@ -160,10 +187,24 @@ func New(cfg Config) *Authenticator {
 		logger.Errorf("[Auth] 远程验证 URL 的主机不在白名单内,已禁用远程兜底: %s", cfg.RemoteVerifyURL)
 	}
 
-	// 初始化租户映射与限流器
+	// 初始化租户映射与限流器。
+	// map key 统一为 SHA-256 哈希,保证内存中不存明文令牌。
+	// 优先使用 TokenHash(预计算哈希);若未配置则对 Token 明文即时哈希后丢弃明文。
 	a.tenantsByToken = make(map[string]*Tenant)
 	for _, tc := range cfg.Tenants {
-		if tc.Token == "" {
+		// 确定 map key(哈希值)
+		var hashKey string
+		switch {
+		case tc.TokenHash != "":
+			// 推荐路径:配置侧已预计算哈希,直接使用,明文令牌从未出现在进程内。
+			hashKey = strings.ToLower(strings.TrimSpace(tc.TokenHash))
+		case tc.Token != "":
+			// 兼容路径:对明文令牌哈希后存储;完成后丢弃明文引用。
+			hashKey = hashToken(tc.Token)
+		default:
+			continue // 两者均未配置,跳过
+		}
+		if hashKey == "" {
 			continue
 		}
 		var limiter *tenantLimiter
@@ -174,10 +215,14 @@ func New(cfg Config) *Authenticator {
 			}
 			limiter = newTenantLimiter(burst)
 		}
-		a.tenantsByToken[tc.Token] = &Tenant{
-			Config:  tc,
+		// 存入 map 前清除明文令牌字段,进一步减少内存中明文的生命周期。
+		tcStored := tc
+		tcStored.Token = ""
+		a.tenantsByToken[hashKey] = &Tenant{
+			Config:  tcStored,
 			Limiter: limiter,
 		}
+		logger.Infof("[Auth] 租户 %s 已注册(哈希存储)", tc.Name)
 	}
 
 	return a
@@ -198,6 +243,9 @@ func hostAllowed(rawURL string, allowed []string) bool {
 }
 
 // Middleware 返回包裹 next 的认证中间件。
+// 认证通过且携带 userID 时，同时把 sessionID→userID 存入内部 map，
+// 供 MCPMiddleware 在 MCP 消息层面补注（SDK 会 detach HTTP context，
+// 直接在 HTTP 层注入的 context value 无法到达 tool handler）。
 func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ip := ClientIP(r)
@@ -219,9 +267,10 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 			return
 		}
 
-		// 1) 多租户鉴权与细粒度流控、ACL 检查
+		// 1) 多租户鉴权与细粒度流控、ACL 检查。
+		// 对请求令牌哈希后查表(map key 为哈希,无需对比明文)。
 		if len(a.tenantsByToken) > 0 {
-			if tenant, ok := a.tenantsByToken[token]; ok {
+			if tenant, ok := a.tenantsByToken[hashToken(token)]; ok {
 				// 租户级流控
 				if tenant.Limiter != nil && tenant.Config.RateRPS > 0 {
 					burst := tenant.Config.RateBurst
@@ -266,14 +315,56 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 		}
 
 		// 3) 远程兜底(带缓存/白名单/限流)。
-		if a.remoteOK && a.verifyRemote(r.Context(), token) {
-			logger.Infof("[Auth] 验证通过(远程): %s %s from %s", r.Method, r.URL.Path, ip)
-			next.ServeHTTP(w, r)
-			return
+		if a.remoteOK {
+			if ok, userID := a.verifyRemote(r.Context(), token); ok {
+				logger.Infof("[Auth] 验证通过(远程): %s %s from %s userid=%s", r.Method, r.URL.Path, ip, userID)
+				ctx := r.Context()
+				if userID != "" {
+					ctx = context.WithValue(ctx, ctxKeyUserID, userID)
+					ctx = trace.WithUserID(ctx, userID)
+					// 把 sessionID→userID 存入 map，供 MCPMiddleware 在 MCP 消息层补注。
+					// MCP-Session-Id 头由 SDK 在 /mcp 的响应里下发，首次 POST
+					// 时客户端会回传该头，从而可在此取到。
+					if sid := r.Header.Get("Mcp-Session-Id"); sid != "" {
+						a.sessionUserID.Store(sid, userID)
+					}
+				}
+				next.ServeHTTP(w, r.WithContext(ctx))
+				return
+			}
 		}
 
 		a.deny(w, r, ip, "令牌无效")
 	})
+}
+
+// MCPMiddleware 返回一个 mcp.MiddlewareFunc，在 MCP 消息层面把 userID 注入 context。
+// 必须与 Middleware 配合使用，通过 server.AddReceivingMiddleware 注册到 mcp.Server。
+//
+// 背景：MCP SDK (go-sdk) 在建立 Streamable HTTP / SSE 长连接时会 detach HTTP 请求
+// 的 context（见 streamable.go 注释），导致 HTTP 中间件注入的 context value 在
+// tool handler 里丢失。本方法在 SDK 的 MCP 消息层面重新补注，确保
+// trace.EffectiveUserID(ctx, ...) 能透明取到远程验证返回的 userID。
+func (a *Authenticator) MCPMiddleware() func(next mcp.MethodHandler) mcp.MethodHandler {
+	return func(next mcp.MethodHandler) mcp.MethodHandler {
+		return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
+			// 优先级：ctx 中已有值（URL ?userId= 注入）> session map 中的 userID（远程验证注入）
+			if trace.UserIDFromContext(ctx) == "" {
+				if sid := req.GetSession().ID(); sid != "" {
+					if v, ok := a.sessionUserID.Load(sid); ok {
+						ctx = trace.WithUserID(ctx, v.(string))
+					}
+				}
+			}
+			return next(ctx, method, req)
+		}
+	}
+}
+
+// CleanSession 清理 session 关闭后残留的 sessionID→userID 映射，防止内存泄漏。
+// 在 mcp.ServerOptions.OnSessionClose（或等效回调）中调用。
+func (a *Authenticator) CleanSession(sessionID string) {
+	a.sessionUserID.Delete(sessionID)
 }
 
 // ClientIP 尽力解析请求来源 IP:优先 X-Forwarded-For(取最初客户端)、X-Real-IP,
@@ -373,14 +464,15 @@ func (a *Authenticator) deny(w http.ResponseWriter, r *http.Request, ip, reason 
 }
 
 // verifyRemote 查缓存→限流→发起远程验证,并回写缓存。
-func (a *Authenticator) verifyRemote(ctx context.Context, token string) bool {
+// 返回 (验证通过, userID)；userID 在远程响应未携带时为空字符串。
+func (a *Authenticator) verifyRemote(ctx context.Context, token string) (bool, string) {
 	key := hashToken(token)
 
 	// 1. 无锁从 sync.Map 载入缓存
 	if val, ok := a.cache.Load(key); ok {
 		e := val.(cacheEntry)
 		if time.Now().Before(e.exp) {
-			return e.ok
+			return e.ok, e.userID
 		}
 	}
 
@@ -391,19 +483,19 @@ func (a *Authenticator) verifyRemote(ctx context.Context, token string) bool {
 
 	if !allowed {
 		logger.Errorf("[Auth] 远程验证被限流,拒绝本次请求")
-		return false
+		return false, ""
 	}
 
-	ok := a.doRemoteCall(ctx, token)
+	ok, userID := a.doRemoteCall(ctx, token)
 
 	ttl := a.cfg.NegativeTTL
 	if ok {
 		ttl = a.cfg.PositiveTTL
 	}
 
-	// 3. 无锁回写缓存到 sync.Map
-	a.cache.Store(key, cacheEntry{ok: ok, exp: time.Now().Add(ttl)})
-	return ok
+	// 3. 无锁回写缓存到 sync.Map（包含 userID）
+	a.cache.Store(key, cacheEntry{ok: ok, userID: userID, exp: time.Now().Add(ttl)})
+	return ok, userID
 }
 
 // allowRemoteCallLocked 实现简单令牌桶;调用方须持有 a.limiterMu。
@@ -422,20 +514,52 @@ func (a *Authenticator) allowRemoteCallLocked() bool {
 	return false
 }
 
-func (a *Authenticator) doRemoteCall(ctx context.Context, token string) bool {
+// doRemoteCall 向远程验证端点发起请求，返回 (验证通过, userID)。
+// userID 从响应体 JSON 的 "userid" 字段解析；响应体非 JSON 或字段缺失时为空字符串。
+func (a *Authenticator) doRemoteCall(ctx context.Context, token string) (bool, string) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, a.cfg.RemoteVerifyURL, nil)
 	if err != nil {
 		logger.Errorf("[Auth] 构造远程验证请求失败: %v", err)
-		return false
+		return false, ""
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	resp, err := a.httpClient.Do(req)
 	if err != nil {
 		logger.Errorf("[Auth] 远程验证请求异常: %v", err)
-		return false
+		return false, ""
 	}
 	defer resp.Body.Close()
-	return resp.StatusCode == http.StatusOK
+
+	// 限制读取大小，防止超大响应体撑爆内存
+	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if err != nil {
+		logger.Errorf("[Auth] 读取远程验证响应体失败: %v", err)
+		return false, ""
+	}
+
+	// 尝试从响应体 JSON 中解析 userid 字段（兼容 data.userid 与 根节点 userid）
+	var payload struct {
+		UserID string `json:"userid"`
+		Data   struct {
+			UserID string `json:"userid"`
+		} `json:"data"`
+	}
+	_ = json.Unmarshal(bodyBytes, &payload)
+
+	userID := payload.Data.UserID
+	if userID == "" {
+		userID = payload.UserID
+	}
+
+	ok := resp.StatusCode == http.StatusOK
+	if ok {
+		logger.Infof("[Auth] 远程验证通过 token=%s status=%d userid=%s body=%s",
+			mask(token), resp.StatusCode, userID, bodyBytes)
+	} else {
+		logger.Errorf("[Auth] 远程验证拒绝 token=%s status=%d body=%s",
+			mask(token), resp.StatusCode, bodyBytes)
+	}
+	return ok, userID
 }
 
 func hashToken(token string) string {
@@ -467,7 +591,7 @@ func extractToolName(r *http.Request) (string, []byte, error) {
 	if r.Method != http.MethodPost || r.Body == nil {
 		return "", nil, nil
 	}
-	bodyBytes, err := io.ReadAll(r.Body)
+	bodyBytes, err := io.ReadAll(io.LimitReader(r.Body, 64*1024))
 	if err != nil {
 		return "", nil, err
 	}

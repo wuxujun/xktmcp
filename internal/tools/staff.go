@@ -6,6 +6,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/wuxujun/xktmcp/internal/logger"
+	"github.com/wuxujun/xktmcp/internal/metrics"
 	"github.com/wuxujun/xktmcp/internal/pii"
 	"github.com/wuxujun/xktmcp/internal/service"
 	"github.com/wuxujun/xktmcp/internal/trace"
@@ -38,8 +39,10 @@ func StaffSearchHandler(
 		if val, ok := sharedCache.Get(cacheKey); ok {
 			cached := val.(toolResultItem)
 			logger.InfofCtx(ctx, "[Cache] staff_search hit cache: query=%s", args.Query)
+			metrics.ObserveCacheAccess("staff_search", true)
 			return cached.result, cached.data, nil
 		}
+		metrics.ObserveCacheAccess("staff_search", false)
 
 		items, err := svc.StaffSearch(ctx, userID, args.Query)
 		if err != nil {

@@ -15,7 +15,7 @@ import (
 func TestStudentServiceSearch(t *testing.T) {
 	t.Run("empty query returns error", func(t *testing.T) {
 		svc := NewStudentService(nil)
-		_, err := svc.Search(context.Background(), "  ")
+		_, err := svc.Search(context.Background(), "  ", 1, 20)
 		if err != ErrInvalidQuery {
 			t.Errorf("expected ErrInvalidQuery, got %v", err)
 		}
@@ -56,7 +56,7 @@ func TestStudentServiceSearch(t *testing.T) {
 		api := client.NewStudentAPI(cfg)
 		svc := NewStudentService(api)
 
-		res, err := svc.Search(context.Background(), "张三")
+		res, err := svc.Search(context.Background(), "张三", 1, 20)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -65,6 +65,36 @@ func TestStudentServiceSearch(t *testing.T) {
 			t.Errorf("expected student 张三, got %+v", res)
 		}
 	})
+}
+
+// TestStudentServiceSearchPagination 验证分页参数被正确透传到上游 URL。
+func TestStudentServiceSearchPagination(t *testing.T) {
+	mockStudents := []model.Student{
+		{ID: 2, StuName: "张三", SmpId: "smp_1002"},
+	}
+
+	var gotPage, gotPageSize string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPage = r.URL.Query().Get("page")
+		gotPageSize = r.URL.Query().Get("page_size")
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"data": mockStudents})
+	}))
+	defer server.Close()
+
+	cfg := client.Config{BaseURL: server.URL, APIToken: "test-token", Timeout: 2 * time.Second}
+	svc := NewStudentService(client.NewStudentAPI(cfg))
+
+	_, err := svc.Search(context.Background(), "张三", 3, 50)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotPage != "3" {
+		t.Errorf("expected page=3 in URL, got %q", gotPage)
+	}
+	if gotPageSize != "50" {
+		t.Errorf("expected page_size=50 in URL, got %q", gotPageSize)
+	}
 }
 
 func TestStudentServiceSearchOrders(t *testing.T) {

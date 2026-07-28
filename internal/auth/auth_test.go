@@ -327,3 +327,93 @@ func TestMultiTenantAuth(t *testing.T) {
 		t.Errorf("tenant-2 calling any tool should pass, got %d", code)
 	}
 }
+
+// TestMultiTenantTokenHash 验证使用预计算 SHA-256 哈希(token_hash)配置路径:
+// 配置中不再出现明文令牌,进程内存中只保存哈希,请求方仍发送原始明文令牌。
+func TestMultiTenantTokenHash(t *testing.T) {
+	// echo -n 'secret-hash-token' | sha256sum
+	// 预计算: sha256("secret-hash-token")
+	tokenPlain := "secret-hash-token"
+	tokenHash := hashToken(tokenPlain) // 使用同包的 hashToken 函数
+
+	config := Config{
+		Tenants: []TenantConfig{
+			{
+				Name:         "hash-tenant",
+				TokenHash:    tokenHash, // 只配置哈希,不提供明文
+				AllowedTools: []string{"*"},
+			},
+		},
+	}
+	a := New(config)
+
+	// 租户哈希配置下,map key 为哈希值,不含明文令牌。
+	if _, found := a.tenantsByToken[tokenPlain]; found {
+		t.Fatal("tenantsByToken 不应以明文令牌为 key")
+	}
+	if _, found := a.tenantsByToken[tokenHash]; !found {
+		t.Fatal("tenantsByToken 应以哈希值为 key")
+	}
+
+	// 请求方发送明文令牌,仍应被正确识别并放行。
+	req := httptest.NewRequest(http.MethodPost, "/mcp",
+		strings.NewReader(`{"jsonrpc":"2.0","method":"tools/call","params":{"name":"rag_search"}}`))
+	req.Header.Set("Authorization", "Bearer "+tokenPlain)
+	if code := serve(a, req); code != http.StatusOK {
+		t.Errorf("token_hash 配置下请求方发送明文令牌应放行, got %d", code)
+	}
+
+	// 错误令牌应被拒绝。
+	reqBad := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	reqBad.Header.Set("Authorization", "Bearer wrong-token")
+	if code := serve(a, reqBad); code != http.StatusUnauthorized {
+		t.Errorf("错误令牌应 401, got %d", code)
+	}
+}
+
+// TestMultiTenantMixedConfig 验证 token(明文) 与 token_hash 两种配置可在同一 Authenticator 中混用。
+func TestMultiTenantMixedConfig(t *testing.T) {
+	plainToken := "plain-tenant-token"
+	hashTenantPlain := "hash-tenant-token"
+	hashTenantHash := hashToken(hashTenantPlain)
+
+	config := Config{
+		Tenants: []TenantConfig{
+			{
+				Name:         "plain-tenant",
+				Token:        plainToken,
+				AllowedTools: []string{"student_search"},
+			},
+			{
+				Name:         "hash-tenant",
+				TokenHash:    hashTenantHash,
+				AllowedTools: []string{"rag_search"},
+			},
+		},
+	}
+	a := New(config)
+
+	// plain-tenant 调用允许工具 -> 200
+	req1 := httptest.NewRequest(http.MethodPost, "/mcp",
+		strings.NewReader(`{"jsonrpc":"2.0","method":"tools/call","params":{"name":"student_search"}}`))
+	req1.Header.Set("Authorization", "Bearer "+plainToken)
+	if code := serve(a, req1); code != http.StatusOK {
+		t.Errorf("plain-tenant student_search 应放行, got %d", code)
+	}
+
+	// hash-tenant 调用允许工具 -> 200
+	req2 := httptest.NewRequest(http.MethodPost, "/mcp",
+		strings.NewReader(`{"jsonrpc":"2.0","method":"tools/call","params":{"name":"rag_search"}}`))
+	req2.Header.Set("Authorization", "Bearer "+hashTenantPlain)
+	if code := serve(a, req2); code != http.StatusOK {
+		t.Errorf("hash-tenant rag_search 应放行, got %d", code)
+	}
+
+	// hash-tenant 调用 student_search (未授权) -> 401
+	req3 := httptest.NewRequest(http.MethodPost, "/mcp",
+		strings.NewReader(`{"jsonrpc":"2.0","method":"tools/call","params":{"name":"student_search"}}`))
+	req3.Header.Set("Authorization", "Bearer "+hashTenantPlain)
+	if code := serve(a, req3); code != http.StatusUnauthorized {
+		t.Errorf("hash-tenant student_search 应 401, got %d", code)
+	}
+}

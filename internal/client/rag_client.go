@@ -15,6 +15,7 @@ type RagAPI struct {
 	baseURL  string
 	apiToken string
 	client   *http.Client
+	breaker  *CircuitBreaker
 }
 
 type ragSearchResponse struct {
@@ -37,11 +38,12 @@ func NewRagAPI(cfg Config) *RagAPI {
 			Transport: transport,
 			Timeout:   cfg.Timeout,
 		},
+		breaker:  ragBreaker,
 	}
 }
 
 func (a *RagAPI) SearchRags(ctx context.Context, userId, query string) ([]model.Rag, error) {
-	u := fmt.Sprintf("%s/api/ai/rag/search?userId=%s&query=%s", a.baseURL, userId, url.QueryEscape(query))
+	u := fmt.Sprintf("%s/api/ai/rag/search?userId=%s&query=%s", a.baseURL, url.QueryEscape(userId), url.QueryEscape(query))
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
@@ -50,7 +52,7 @@ func (a *RagAPI) SearchRags(ctx context.Context, userId, query string) ([]model.
 	a.applyHeaders(req)
 
 	logger.APIfCtx(ctx, "SearchRags", "发起请求: %s", u)
-	resp, err := doRequestWithRetry(ctx, a.client, req, "SearchRags")
+	resp, err := doRequestWithRetry(ctx, a.client, req, "SearchRags", a.breaker)
 	if err != nil {
 		return nil, err
 	}

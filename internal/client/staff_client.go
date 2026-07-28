@@ -15,6 +15,7 @@ type StaffAPI struct {
 	baseURL  string
 	apiToken string
 	client   *http.Client
+	breaker  *CircuitBreaker
 }
 
 type staffSearchResponse struct {
@@ -37,11 +38,12 @@ func NewStaffAPI(cfg Config) *StaffAPI {
 			Transport: transport,
 			Timeout:   cfg.Timeout,
 		},
+		breaker:  staffBreaker,
 	}
 }
 
 func (a *StaffAPI) SearchStaffs(ctx context.Context, userId, query string) ([]model.Staff, error) {
-	u := fmt.Sprintf("%s/api/staff?userid=%s&query=%s", a.baseURL, userId, url.QueryEscape(query))
+	u := fmt.Sprintf("%s/api/staff?userid=%s&query=%s", a.baseURL, url.QueryEscape(userId), url.QueryEscape(query))
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
@@ -50,7 +52,7 @@ func (a *StaffAPI) SearchStaffs(ctx context.Context, userId, query string) ([]mo
 	a.applyHeaders(req)
 
 	logger.APIfCtx(ctx, "SearchStaffs", "发起请求: %s", u)
-	resp, err := doRequestWithRetry(ctx, a.client, req, "SearchStaffs")
+	resp, err := doRequestWithRetry(ctx, a.client, req, "SearchStaffs", a.breaker)
 	if err != nil {
 		return nil, err
 	}
