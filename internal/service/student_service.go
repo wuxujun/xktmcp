@@ -23,34 +23,38 @@ func NewStudentService(api *client.StudentAPI) *StudentService {
 	return &StudentService{api: api}
 }
 
-func (s *StudentService) Search(ctx context.Context, query string, page, pageSize int) ([]model.Student, error) {
+func (s *StudentService) Search(ctx context.Context, userId, query string, page, pageSize int) ([]model.Student, error) {
+	userId = strings.TrimSpace(userId)
 	query = strings.TrimSpace(query)
 	if query == "" {
 		return nil, ErrInvalidQuery
 	}
-	return s.api.SearchStudents(ctx, query, page, pageSize)
+	return s.api.SearchStudents(ctx, userId, query, page, pageSize)
 }
 
-func (s *StudentService) SearchOrders(ctx context.Context, query string) ([]model.StudentOrder, error) {
+func (s *StudentService) SearchOrders(ctx context.Context, userId, query string) ([]model.StudentOrder, error) {
+	userId = strings.TrimSpace(userId)
 	query = strings.TrimSpace(query)
 	if query == "" {
 		return nil, ErrInvalidQuery
 	}
-	return s.api.SearchOrders(ctx, query)
+	return s.api.SearchOrders(ctx, userId, query)
 }
 
-func (s *StudentService) SearchExam(ctx context.Context, query string) ([]model.StudentExam, error) {
+func (s *StudentService) SearchExam(ctx context.Context, userId, query string) ([]model.StudentExam, error) {
+	userId = strings.TrimSpace(userId)
 	query = strings.TrimSpace(query)
 	if query == "" {
 		return nil, ErrInvalidQuery
 	}
-	return s.api.SearchExam(ctx, query)
+	return s.api.SearchExam(ctx, userId, query)
 }
 
-func (s *StudentService) Get(ctx context.Context, id string) (*model.Student, error) {
+func (s *StudentService) Get(ctx context.Context, userId, id string) (*model.Student, error) {
+	userId = strings.TrimSpace(userId)
 	id = strings.TrimSpace(id)
 	if id == "" {
 		return nil, ErrInvalidID
 	}
-	return s.api.GetStudent(ctx, id)
+	return s.api.GetStudent(ctx, userId, id)
 }

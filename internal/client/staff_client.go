@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/wuxujun/xktmcp/internal/logger"
 	"github.com/wuxujun/xktmcp/internal/model"
@@ -43,7 +44,11 @@ func NewStaffAPI(cfg Config) *StaffAPI {
 }
 
 func (a *StaffAPI) SearchStaffs(ctx context.Context, userId, query string) ([]model.Staff, error) {
-	u := fmt.Sprintf("%s/api/staff?userid=%s&query=%s", a.baseURL, url.QueryEscape(userId), url.QueryEscape(query))
+	userId = strings.TrimSpace(userId)
+	u := fmt.Sprintf("%s/api/staff?query=%s", a.baseURL, url.QueryEscape(query))
+	if userId != "" {
+		u = fmt.Sprintf("%s/api/staff?userid=%s&query=%s", a.baseURL, url.QueryEscape(userId), url.QueryEscape(query))
+	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {

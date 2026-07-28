@@ -15,7 +15,7 @@ import (
 func TestStudentServiceSearch(t *testing.T) {
 	t.Run("empty query returns error", func(t *testing.T) {
 		svc := NewStudentService(nil)
-		_, err := svc.Search(context.Background(), "  ", 1, 20)
+		_, err := svc.Search(context.Background(), "user_123", "  ", 1, 20)
 		if err != ErrInvalidQuery {
 			t.Errorf("expected ErrInvalidQuery, got %v", err)
 		}
@@ -56,7 +56,7 @@ func TestStudentServiceSearch(t *testing.T) {
 		api := client.NewStudentAPI(cfg)
 		svc := NewStudentService(api)
 
-		res, err := svc.Search(context.Background(), "张三", 1, 20)
+		res, err := svc.Search(context.Background(), "user_123", "张三", 1, 20)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -85,7 +85,7 @@ func TestStudentServiceSearchPagination(t *testing.T) {
 	cfg := client.Config{BaseURL: server.URL, APIToken: "test-token", Timeout: 2 * time.Second}
 	svc := NewStudentService(client.NewStudentAPI(cfg))
 
-	_, err := svc.Search(context.Background(), "张三", 3, 50)
+	_, err := svc.Search(context.Background(), "user_123", "张三", 3, 50)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -100,7 +100,7 @@ func TestStudentServiceSearchPagination(t *testing.T) {
 func TestStudentServiceSearchOrders(t *testing.T) {
 	t.Run("empty query returns error", func(t *testing.T) {
 		svc := NewStudentService(nil)
-		_, err := svc.SearchOrders(context.Background(), "")
+		_, err := svc.SearchOrders(context.Background(), "user_123", "")
 		if err != ErrInvalidQuery {
 			t.Errorf("expected ErrInvalidQuery, got %v", err)
 		}
@@ -132,7 +132,7 @@ func TestStudentServiceSearchOrders(t *testing.T) {
 		api := client.NewStudentAPI(cfg)
 		svc := NewStudentService(api)
 
-		res, err := svc.SearchOrders(context.Background(), "smp_1001")
+		res, err := svc.SearchOrders(context.Background(), "user_123", "smp_1001")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -146,7 +146,7 @@ func TestStudentServiceSearchOrders(t *testing.T) {
 func TestStudentServiceSearchExam(t *testing.T) {
 	t.Run("empty query returns error", func(t *testing.T) {
 		svc := NewStudentService(nil)
-		_, err := svc.SearchExam(context.Background(), " ")
+		_, err := svc.SearchExam(context.Background(), "user_123", " ")
 		if err != ErrInvalidQuery {
 			t.Errorf("expected ErrInvalidQuery, got %v", err)
 		}
@@ -178,7 +178,7 @@ func TestStudentServiceSearchExam(t *testing.T) {
 		api := client.NewStudentAPI(cfg)
 		svc := NewStudentService(api)
 
-		res, err := svc.SearchExam(context.Background(), "smp_1001")
+		res, err := svc.SearchExam(context.Background(), "user_123", "smp_1001")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -192,7 +192,7 @@ func TestStudentServiceSearchExam(t *testing.T) {
 func TestStudentServiceGet(t *testing.T) {
 	t.Run("empty ID returns error", func(t *testing.T) {
 		svc := NewStudentService(nil)
-		_, err := svc.Get(context.Background(), "")
+		_, err := svc.Get(context.Background(), "user_123", "")
 		if err != ErrInvalidID {
 			t.Errorf("expected ErrInvalidID, got %v", err)
 		}
@@ -222,7 +222,7 @@ func TestStudentServiceGet(t *testing.T) {
 		api := client.NewStudentAPI(cfg)
 		svc := NewStudentService(api)
 
-		res, err := svc.Get(context.Background(), "smp_1002")
+		res, err := svc.Get(context.Background(), "user_123", "smp_1002")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}

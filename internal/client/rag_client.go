@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/wuxujun/xktmcp/internal/logger"
 	"github.com/wuxujun/xktmcp/internal/model"
@@ -43,7 +44,11 @@ func NewRagAPI(cfg Config) *RagAPI {
 }
 
 func (a *RagAPI) SearchRags(ctx context.Context, userId, query string) ([]model.Rag, error) {
-	u := fmt.Sprintf("%s/api/ai/rag/search?userId=%s&query=%s", a.baseURL, url.QueryEscape(userId), url.QueryEscape(query))
+	userId = strings.TrimSpace(userId)
+	u := fmt.Sprintf("%s/api/ai/rag/search?query=%s", a.baseURL, url.QueryEscape(query))
+	if userId != "" {
+		u = fmt.Sprintf("%s/api/ai/rag/search?userId=%s&query=%s", a.baseURL, url.QueryEscape(userId), url.QueryEscape(query))
+	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {

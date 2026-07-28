@@ -81,9 +81,13 @@ func NewStudentAPI(cfg Config) *StudentAPI {
 	}
 }
 
-func (a *StudentAPI) SearchStudents(ctx context.Context, query string, page, pageSize int) ([]model.Student, error) {
+func (a *StudentAPI) SearchStudents(ctx context.Context, userId, query string, page, pageSize int) ([]model.Student, error) {
+	userId = strings.TrimSpace(userId)
 	u := fmt.Sprintf("%s/api/student?query=%s&page=%d&page_size=%d",
 		a.baseURL, url.QueryEscape(query), page, pageSize)
+	if userId != "" {
+		u += "&userId=" + url.QueryEscape(userId)
+	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
@@ -110,8 +114,12 @@ func (a *StudentAPI) SearchStudents(ctx context.Context, query string, page, pag
 	return out.Data, nil
 }
 
-func (a *StudentAPI) SearchOrders(ctx context.Context, query string) ([]model.StudentOrder, error) {
+func (a *StudentAPI) SearchOrders(ctx context.Context, userId, query string) ([]model.StudentOrder, error) {
+	userId = strings.TrimSpace(userId)
 	u := fmt.Sprintf("%s/api/student/order?query=%s", a.baseURL, url.QueryEscape(query))
+	if userId != "" {
+		u += "&userId=" + url.QueryEscape(userId)
+	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
@@ -138,8 +146,12 @@ func (a *StudentAPI) SearchOrders(ctx context.Context, query string) ([]model.St
 	return out.Data, nil
 }
 
-func (a *StudentAPI) SearchExam(ctx context.Context, query string) ([]model.StudentExam, error) {
+func (a *StudentAPI) SearchExam(ctx context.Context, userId, query string) ([]model.StudentExam, error) {
+	userId = strings.TrimSpace(userId)
 	u := fmt.Sprintf("%s/api/student/exam?query=%s", a.baseURL, url.QueryEscape(query))
+	if userId != "" {
+		u += "&userId=" + url.QueryEscape(userId)
+	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
@@ -166,8 +178,12 @@ func (a *StudentAPI) SearchExam(ctx context.Context, query string) ([]model.Stud
 	return out.Data, nil
 }
 
-func (a *StudentAPI) GetStudent(ctx context.Context, id string) (*model.Student, error) {
+func (a *StudentAPI) GetStudent(ctx context.Context, userId, id string) (*model.Student, error) {
+	userId = strings.TrimSpace(userId)
 	u := fmt.Sprintf("%s/api/student/%s", a.baseURL, url.PathEscape(id))
+	if userId != "" {
+		u += "?userId=" + url.QueryEscape(userId)
+	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {

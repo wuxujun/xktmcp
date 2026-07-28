@@ -10,6 +10,7 @@ import (
 	"github.com/wuxujun/xktmcp/internal/metrics"
 	"github.com/wuxujun/xktmcp/internal/pii"
 	"github.com/wuxujun/xktmcp/internal/service"
+	"github.com/wuxujun/xktmcp/internal/trace"
 )
 
 var studentCache = sharedCache
@@ -100,7 +101,8 @@ func StudentSearchHandler(
 	svc *service.StudentService,
 ) func(context.Context, *mcp.CallToolRequest, StudentSearchArgs) (*mcp.CallToolResult, any, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, args StudentSearchArgs) (*mcp.CallToolResult, any, error) {
-		logger.ToolfCtx(ctx, "student_search", "querier=%s subject=%s page=%d page_size=%d", args.UserID, pii.MaskSubject(args.Query), args.Page, args.PageSize)
+		userID := trace.EffectiveUserID(ctx, args.UserID)
+		logger.ToolfCtx(ctx, "student_search", "querier=%s subject=%s page=%d page_size=%d", userID, pii.MaskSubject(args.Query), args.Page, args.PageSize)
 
 		// 分页参数归一化
 		page := args.Page
@@ -114,7 +116,7 @@ func StudentSearchHandler(
 			pageSize = 100
 		}
 
-		cacheKey := fmt.Sprintf("student:search:%s:%d:%d", args.Query, page, pageSize)
+		cacheKey := fmt.Sprintf("student:search:%s:%s:%d:%d", userID, args.Query, page, pageSize)
 		if val, ok := studentCache.Get(cacheKey); ok {
 			cached := val.(toolResultItem)
 			logger.InfofCtx(ctx, "[Cache] student_search hit cache: query=%s page=%d", args.Query, page)
@@ -123,7 +125,7 @@ func StudentSearchHandler(
 		}
 		metrics.ObserveCacheAccess("student_search", false)
 
-		items, err := svc.Search(ctx, args.Query, page, pageSize)
+		items, err := svc.Search(ctx, userID, args.Query, page, pageSize)
 		if err != nil {
 			return &mcp.CallToolResult{
 				Content: []mcp.Content{
@@ -149,9 +151,10 @@ func StudentOrderHandler(
 	svc *service.StudentService,
 ) func(context.Context, *mcp.CallToolRequest, StudentGetArgs) (*mcp.CallToolResult, any, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, args StudentGetArgs) (*mcp.CallToolResult, any, error) {
-		logger.ToolfCtx(ctx, "student_order", "querier=%s subject=%s", args.UserID, pii.MaskSubject(args.ID))
+		userID := trace.EffectiveUserID(ctx, args.UserID)
+		logger.ToolfCtx(ctx, "student_order", "querier=%s subject=%s", userID, pii.MaskSubject(args.ID))
 
-		cacheKey := "student:order:" + args.ID
+		cacheKey := fmt.Sprintf("student:order:%s:%s", userID, args.ID)
 		if val, ok := studentCache.Get(cacheKey); ok {
 			cached := val.(toolResultItem)
 			logger.InfofCtx(ctx, "[Cache] student_order hit cache: id=%s", args.ID)
@@ -160,7 +163,7 @@ func StudentOrderHandler(
 		}
 		metrics.ObserveCacheAccess("student_order", false)
 
-		items, err := svc.SearchOrders(ctx, args.ID)
+		items, err := svc.SearchOrders(ctx, userID, args.ID)
 		if err != nil {
 			return &mcp.CallToolResult{
 				Content: []mcp.Content{
@@ -186,9 +189,10 @@ func StudentExamHandler(
 	svc *service.StudentService,
 ) func(context.Context, *mcp.CallToolRequest, StudentGetArgs) (*mcp.CallToolResult, any, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, args StudentGetArgs) (*mcp.CallToolResult, any, error) {
-		logger.ToolfCtx(ctx, "student_exam", "querier=%s subject=%s", args.UserID, pii.MaskSubject(args.ID))
+		userID := trace.EffectiveUserID(ctx, args.UserID)
+		logger.ToolfCtx(ctx, "student_exam", "querier=%s subject=%s", userID, pii.MaskSubject(args.ID))
 
-		cacheKey := "student:exam:" + args.ID
+		cacheKey := fmt.Sprintf("student:exam:%s:%s", userID, args.ID)
 		if val, ok := studentCache.Get(cacheKey); ok {
 			cached := val.(toolResultItem)
 			logger.InfofCtx(ctx, "[Cache] student_exam hit cache: id=%s", args.ID)
@@ -197,7 +201,7 @@ func StudentExamHandler(
 		}
 		metrics.ObserveCacheAccess("student_exam", false)
 
-		items, err := svc.SearchExam(ctx, args.ID)
+		items, err := svc.SearchExam(ctx, userID, args.ID)
 		if err != nil {
 			return &mcp.CallToolResult{
 				Content: []mcp.Content{
@@ -223,9 +227,10 @@ func StudentGetHandler(
 	svc *service.StudentService,
 ) func(context.Context, *mcp.CallToolRequest, StudentGetArgs) (*mcp.CallToolResult, any, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, args StudentGetArgs) (*mcp.CallToolResult, any, error) {
-		logger.ToolfCtx(ctx, "student_get", "querier=%s subject=%s", args.UserID, pii.MaskSubject(args.ID))
+		userID := trace.EffectiveUserID(ctx, args.UserID)
+		logger.ToolfCtx(ctx, "student_get", "querier=%s subject=%s", userID, pii.MaskSubject(args.ID))
 
-		cacheKey := "student:get:" + args.ID
+		cacheKey := fmt.Sprintf("student:get:%s:%s", userID, args.ID)
 		if val, ok := studentCache.Get(cacheKey); ok {
 			cached := val.(toolResultItem)
 			logger.InfofCtx(ctx, "[Cache] student_get hit cache: id=%s", args.ID)
@@ -234,7 +239,7 @@ func StudentGetHandler(
 		}
 		metrics.ObserveCacheAccess("student_get", false)
 
-		item, err := svc.Get(ctx, args.ID)
+		item, err := svc.Get(ctx, userID, args.ID)
 		if err != nil {
 			return &mcp.CallToolResult{
 				Content: []mcp.Content{
