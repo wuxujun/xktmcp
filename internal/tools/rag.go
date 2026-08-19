@@ -78,11 +78,13 @@ type RagSearchResponse struct {
 
 func RagSearchTool() *mcp.Tool {
 	return &mcp.Tool{
-		Name:        "rag_search",
-		Description: `用于企业知识库检索。输入用户问题，返回经过查询改写、检索、筛选和整理后的上下文与来源信息。当问题涉及知识库事实时，必须优先调用此工具，再基于返回的 context 和 sources 回答。`,
-		InputSchema: publicSchema[RagSearchArgs](envelopeFields),
+		Name:         "rag_search",
+		Description:  `用于企业知识库检索。输入用户问题，返回经过查询改写、检索、筛选和整理后的上下文与来源信息。当问题涉及知识库事实时，必须优先调用此工具，再基于返回的 context 和 sources 回答。`,
+		InputSchema:  publicSchema[RagSearchArgs](envelopeFields),
+		OutputSchema: outputSchema[RagSearchResponse](),
 	}
 }
+
 
 func rewriteQuery(query string) string {
 	q := query

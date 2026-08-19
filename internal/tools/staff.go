@@ -7,6 +7,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/wuxujun/xktmcp/internal/logger"
 	"github.com/wuxujun/xktmcp/internal/metrics"
+	"github.com/wuxujun/xktmcp/internal/model"
 	"github.com/wuxujun/xktmcp/internal/pii"
 	"github.com/wuxujun/xktmcp/internal/service"
 	"github.com/wuxujun/xktmcp/internal/trace"
@@ -22,11 +23,13 @@ func (a StaffSearchArgs) AuditSubject() string { return a.Query }
 
 func StaffSearchTool() *mcp.Tool {
 	return &mcp.Tool{
-		Name:        "staff_search",
-		Description: `企业/教育机构信息查询工具。凡是用户问题涉及员工、userid、教师、校区、学院、部门、学科、课程、专业或它们之间的关系查询，必须优先调用本工具。工具会返回可用于回答的 context 和 sources。模型必须基于返回的 context 与 sources 作答，不得直接猜测；若存在重名、歧义或信息不足，需先澄清或明确说明未查到。`,
-		InputSchema: publicSchema[StaffSearchArgs](envelopeFields),
+		Name:         "staff_search",
+		Description:  `企业/教育机构信息查询工具。凡是用户问题涉及员工、userid、教师、校区、学院、部门、学科、课程、专业或它们之间的关系查询，必须优先调用本工具。工具会返回可用于回答的 context 和 sources。模型必须基于返回的 context 与 sources 作答，不得直接猜测；若存在重名、歧义或信息不足，需先澄清或明确说明未查到。`,
+		InputSchema:  publicSchema[StaffSearchArgs](envelopeFields),
+		OutputSchema: outputSchema[[]model.Staff](),
 	}
 }
+
 
 func StaffSearchHandler(
 	svc *service.StaffService,

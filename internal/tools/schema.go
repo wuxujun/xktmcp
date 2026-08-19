@@ -40,3 +40,14 @@ func publicSchema[T any](drop []string) *jsonschema.Schema {
 	s.AdditionalProperties = nil
 	return s
 }
+
+// outputSchema 基于出参类型 T 推断强类型 output schema。
+func outputSchema[T any]() *jsonschema.Schema {
+	s, err := jsonschema.For[T](&jsonschema.ForOptions{})
+	if err != nil {
+		panic("tools: infer output schema: " + err.Error())
+	}
+	return s
+}
+
+
