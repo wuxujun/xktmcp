@@ -152,3 +152,19 @@ func TestMemoryCache_NoExpiry(t *testing.T) {
 		t.Error("ttl=0 应永不过期")
 	}
 }
+
+func TestMemoryCache_DeletePrefix(t *testing.T) {
+	cache := NewMemoryCacheWithOptions(10, 0)
+	defer cache.Stop()
+	cache.Set("wiki:page:1", 1, time.Minute)
+	cache.Set("wiki:search:1", 2, time.Minute)
+	cache.Set("student:1", 3, time.Minute)
+
+	cache.DeletePrefix("wiki:")
+	if cache.Len() != 1 {
+		t.Fatalf("Len = %d, want 1", cache.Len())
+	}
+	if _, ok := cache.Get("student:1"); !ok {
+		t.Fatal("DeletePrefix removed an unrelated cache entry")
+	}
+}

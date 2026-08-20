@@ -223,4 +223,6 @@ var (
 	studentBreaker = NewCircuitBreaker("student", defaultFailureThreshold, defaultCooldown, defaultHalfOpenProbes)
 	ragBreaker     = NewCircuitBreaker("rag", defaultFailureThreshold, defaultCooldown, defaultHalfOpenProbes)
 	staffBreaker   = NewCircuitBreaker("staff", defaultFailureThreshold, defaultCooldown, defaultHalfOpenProbes)
+	wikiBreaker    = NewCircuitBreaker("wiki", defaultFailureThreshold, defaultCooldown, defaultHalfOpenProbes)
 )
+

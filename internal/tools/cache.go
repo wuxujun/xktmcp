@@ -2,6 +2,7 @@ package tools
 
 import (
 	"container/list"
+	"strings"
 	"sync"
 	"time"
 )
@@ -118,6 +119,17 @@ func (c *MemoryCache) Delete(key string) {
 	defer c.mu.Unlock()
 	if el, ok := c.items[key]; ok {
 		c.removeElement(el)
+	}
+}
+
+// DeletePrefix 删除指定命名空间下的全部缓存项。
+func (c *MemoryCache) DeletePrefix(prefix string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for key, el := range c.items {
+		if strings.HasPrefix(key, prefix) {
+			c.removeElement(el)
+		}
 	}
 }
 

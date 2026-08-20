@@ -1,0 +1,11 @@
+{
+  "mode": "http",
+  "local": {
+    "root": "../.wiki",
+    "content_dirs": ["wiki"],
+    "write_dir": "wiki/topics",
+    "default_category": "topics",
+    "refresh_interval_seconds": 30,
+    "max_file_size_bytes": 2097152
+  }
+}

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"flag"
@@ -31,6 +32,7 @@ func main() {
 	port := flag.Int("port", 8080, "HTTP/SSE 模式下的监听端口")
 	logFilePath := flag.String("logfile", "server.log", "日志文件路径")
 	authTokenFlag := flag.String("auth-token", "", "Bearer 本地令牌;留空则回退读取环境变量 AUTH_TOKEN")
+	wikiConfigPath := flag.String("wiki-config", "config/wiki.json", "Wiki 搜索后端配置文件路径")
 	flag.Parse()
 
 	// 配置日志自动分割 (Lumberjack)
@@ -63,14 +65,14 @@ func main() {
 	}()
 
 	s := mcp.NewServer(&mcp.Implementation{
-		Name:    "xkt-student-server",
-		Version: "1.0.0",
+		Name:    "xkt-mcp-server",
+		Version: "1.0.1",
 	}, &mcp.ServerOptions{
 		// 启用心跳功能，每 30 秒发送一次 ping
 		KeepAlive: 30 * time.Second,
 	})
 
-	if err := mcp_server.RegisterAll(s); err != nil {
+	if err := mcp_server.RegisterAll(s, *wikiConfigPath); err != nil {
 		logger.Errorf("无法注册工具: %v", err)
 		os.Exit(1)
 	}
@@ -119,13 +121,11 @@ func main() {
 
 		addr := fmt.Sprintf(":%d", *port)
 		logger.Infof("正在通过 SSE 启动 xkt-student-server，监听地址 %s/sse...", addr)
-		runServer(addr, mux)
+		runServer(addr, requestLoggingMiddleware(mux))
 
 	case "http":
 		// 创建 Streamable HTTP 处理器
-		handler := mcp.NewStreamableHTTPHandler(func(request *http.Request) *mcp.Server {
-			return s
-		}, nil)
+		handler := newStreamableHTTPHandler(s)
 
 		requireAuth(authenticator, "http")
 		finalHandler := authenticator.Middleware(handler)
@@ -140,12 +140,23 @@ func main() {
 
 		addr := fmt.Sprintf(":%d", *port)
 		logger.Infof("正在通过 Streamable HTTP 启动 xkt-mcp-server，监听地址 %s/mcp...", addr)
-		runServer(addr, mux)
+		runServer(addr, requestLoggingMiddleware(mux))
 
 	default:
 		logger.Errorf("未知的传输方式: %s (请使用 stdio, sse 或 http)", *transport)
 		os.Exit(1)
 	}
+}
+
+// newStreamableHTTPHandler 创建同时兼容旧版有握手协议和 2026-07-28
+// 无会话协议的 Streamable HTTP 处理器。MCP Go SDK 仅在 Stateless 模式下
+// 将 2026-07-28 加入 server/discover 的 supportedVersions，并接受该版本请求。
+func newStreamableHTTPHandler(server *mcp.Server) http.Handler {
+	return mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
+		return server
+	}, &mcp.StreamableHTTPOptions{
+		Stateless: true,
+	})
 }
 
 // buildAuthConfig 从环境变量装配认证配置。
@@ -204,6 +215,84 @@ func envBool(key string) bool {
 	default:
 		return false
 	}
+}
+
+// responseRecorder 包裹 http.ResponseWriter，捕获响应状态码和 body 副本。
+type responseRecorder struct {
+	http.ResponseWriter
+	statusCode int
+	body       bytes.Buffer
+}
+
+func (rec *responseRecorder) WriteHeader(code int) {
+	rec.statusCode = code
+	rec.ResponseWriter.WriteHeader(code)
+}
+
+func (rec *responseRecorder) Write(b []byte) (int, error) {
+	// 只缓存前 8KB 用于日志，防止大响应占用过多内存
+	if rec.body.Len() < 8*1024 {
+		remaining := 8*1024 - rec.body.Len()
+		if len(b) <= remaining {
+			rec.body.Write(b)
+		} else {
+			rec.body.Write(b[:remaining])
+		}
+	}
+	return rec.ResponseWriter.Write(b)
+}
+
+// Flush 透传到底层 ResponseWriter 的 Flusher 接口。
+// MCP SDK 的 Streamable HTTP 使用 http.ResponseController.Flush() 推送 SSE 事件,
+// 而 ResponseController 会通过 Unwrap() 或类型断言找到 http.Flusher。
+// 如果不实现,流式响应(包括 tools/list)就无法发送到客户端。
+func (rec *responseRecorder) Flush() {
+	if f, ok := rec.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// Unwrap 返回底层 ResponseWriter,供 http.ResponseController 使用。
+func (rec *responseRecorder) Unwrap() http.ResponseWriter {
+	return rec.ResponseWriter
+}
+
+// requestLoggingMiddleware 记录所有到达服务的 HTTP 请求方法、路径、来源 IP、
+// 关键请求头、Request Body 以及 Response 状态码和 Body（前 8KB）。
+func requestLoggingMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ip := auth.ClientIP(r)
+
+		// 提取关键请求头
+		contentType := r.Header.Get("Content-Type")
+		accept := r.Header.Get("Accept")
+		sessionID := r.Header.Get("Mcp-Session-Id")
+		hasAuth := r.Header.Get("Authorization") != ""
+
+		var bodyStr string
+		if r.Body != nil && r.Method == http.MethodPost {
+			bodyBytes, err := io.ReadAll(io.LimitReader(r.Body, 128*1024))
+			if err == nil {
+				r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+				bodyStr = string(bodyBytes)
+			}
+		}
+
+		logger.InfofCtx(r.Context(),
+			"[HTTP-Req] %s %s from %s | Content-Type=%s Accept=%s Mcp-Session-Id=%s HasAuth=%v | body=%s",
+			r.Method, r.URL.RequestURI(), ip,
+			contentType, accept, sessionID, hasAuth,
+			bodyStr)
+
+		// 用 responseRecorder 包裹以捕获响应
+		rec := &responseRecorder{ResponseWriter: w, statusCode: 200}
+		next.ServeHTTP(rec, r)
+
+		logger.InfofCtx(r.Context(),
+			"[HTTP-Resp] %s %s -> status=%d respBody=%s",
+			r.Method, r.URL.RequestURI(), rec.statusCode,
+			rec.body.String())
+	})
 }
 
 // userIDMiddleware 从 URL query string (?userId=xxx) 读取 userId,

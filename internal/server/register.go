@@ -12,6 +12,7 @@ import (
 	"github.com/wuxujun/xktmcp/internal/service"
 	"github.com/wuxujun/xktmcp/internal/tools"
 	"github.com/wuxujun/xktmcp/internal/trace"
+	wikibackend "github.com/wuxujun/xktmcp/internal/wiki"
 )
 
 // auditable 由内嵌 CommonArgs 的工具 Args 满足:
@@ -26,7 +27,7 @@ type auditable interface {
 }
 
 // RegisterAll 装配依赖并注册所有 MCP 工具(均带统一埋点:trace id + 指标 + 摘要日志)。
-func RegisterAll(s *mcp.Server) error {
+func RegisterAll(s *mcp.Server, wikiConfigPaths ...string) error {
 	baseCfg, err := client.LoadConfigFromEnv()
 	if err != nil {
 		return err
@@ -49,6 +50,36 @@ func RegisterAll(s *mcp.Server) error {
 	staffAPI := client.NewStaffAPI(baseCfg)
 	staffSvc := service.NewStaffService(staffAPI)
 	addTool(s, tools.StaffSearchTool(), tools.StaffSearchHandler(staffSvc))
+
+	//Wiki 知识库
+	wikiAPI := client.NewWikiAPI(baseCfg)
+	wikiConfigPath := "config/wiki.json"
+	if len(wikiConfigPaths) > 0 && wikiConfigPaths[0] != "" {
+		wikiConfigPath = wikiConfigPaths[0]
+	}
+	wikiConfig, err := wikibackend.LoadConfig(wikiConfigPath)
+	if err != nil {
+		return err
+	}
+	var wikiBackend service.WikiBackend = wikiAPI
+	if wikiConfig.Mode == wikibackend.ModeLocal {
+		localSearcher, localErr := wikibackend.NewLocalSearcher(wikiConfig.Local)
+		err = localErr
+		if err != nil {
+			return err
+		}
+		wikiBackend = localSearcher
+		logger.Infof("Wiki 后端: local root=%s content_dirs=%v write_dir=%s indexed_documents=%d",
+			wikiConfig.Local.Root, wikiConfig.Local.ContentDirs, wikiConfig.Local.WriteDir, localSearcher.DocumentCount())
+	} else {
+		logger.Infof("Wiki 后端: http base_url=%s", baseCfg.BaseURL)
+	}
+	wikiSvc := service.NewWikiService(wikiAPI, wikiBackend)
+	addTool(s, tools.WikiSearchTool(), tools.WikiSearchHandler(wikiSvc))
+	addTool(s, tools.WikiGetPageTool(), tools.WikiGetPageHandler(wikiSvc))
+	addTool(s, tools.WikiListTreeTool(), tools.WikiListTreeHandler(wikiSvc))
+	addTool(s, tools.WikiUpsertPageTool(), tools.WikiUpsertPageHandler(wikiSvc))
+	addTool(s, tools.WikiGetBacklinksTool(), tools.WikiGetBacklinksHandler(wikiSvc))
 
 	return nil
 }
