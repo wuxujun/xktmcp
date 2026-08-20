@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"bytes"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -8,6 +9,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/wuxujun/xktmcp/internal/logger"
 )
 
 func newReq(authHeader, rawQuery string) *http.Request {
@@ -37,6 +40,27 @@ func TestLocalTokenMatch(t *testing.T) {
 	}
 	if code := serve(a, newReq("", "")); code != http.StatusUnauthorized {
 		t.Fatalf("缺令牌应 401,得到 %d", code)
+	}
+}
+
+func TestAuthenticationLogsFailuresOnly(t *testing.T) {
+	var logs bytes.Buffer
+	logger.Init(&logs)
+	a := New(Config{LocalToken: "secret-123"})
+
+	if code := serve(a, newReq("Bearer secret-123", "")); code != http.StatusOK {
+		t.Fatalf("correct token returned %d", code)
+	}
+	if code := serve(a, newReq("Bearer wrong", "")); code != http.StatusUnauthorized {
+		t.Fatalf("wrong token returned %d", code)
+	}
+
+	output := logs.String()
+	if strings.Contains(output, "验证通过") {
+		t.Fatalf("successful authentication was logged:\n%s", output)
+	}
+	if !strings.Contains(output, "验证失败") {
+		t.Fatalf("failed authentication was not logged:\n%s", output)
 	}
 }
 

@@ -255,7 +255,6 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 		//    RemoteAddr,杜绝伪造转发头绕过;仅当部署在可信代理后才信任 X-Forwarded-For。
 		if len(a.cfg.AllowedCIDRs) > 0 {
 			if srcIP := a.securityClientIP(r); srcIP != nil && a.ipAllowed(srcIP) {
-				logger.Infof("[Auth] 验证通过(可信网段 %s): %s %s", srcIP, r.Method, r.URL.Path)
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -300,7 +299,6 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 					}
 				}
 
-				logger.Infof("[Auth] 租户 %s 验证通过: %s %s from %s", tenant.Config.Name, r.Method, r.URL.Path, ip)
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -309,7 +307,6 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 		// 2) 本地常量时间比对 (全局静态 Token 兜底)。
 		if a.cfg.LocalToken != "" &&
 			subtle.ConstantTimeCompare([]byte(token), []byte(a.cfg.LocalToken)) == 1 {
-			logger.Infof("[Auth] 验证通过: %s %s from %s", r.Method, r.URL.Path, ip)
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -317,7 +314,6 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 		// 3) 远程兜底(带缓存/白名单/限流)。
 		if a.remoteOK {
 			if ok, userID := a.verifyRemote(r.Context(), token); ok {
-				logger.Infof("[Auth] 验证通过(远程): %s %s from %s userid=%s", r.Method, r.URL.Path, ip, userID)
 				ctx := r.Context()
 				if userID != "" {
 					ctx = context.WithValue(ctx, ctxKeyUserID, userID)
@@ -552,10 +548,7 @@ func (a *Authenticator) doRemoteCall(ctx context.Context, token string) (bool, s
 	}
 
 	ok := resp.StatusCode == http.StatusOK
-	if ok {
-		logger.Infof("[Auth] 远程验证通过 token=%s status=%d userid=%s body=%s",
-			mask(token), resp.StatusCode, userID, bodyBytes)
-	} else {
+	if !ok {
 		logger.Errorf("[Auth] 远程验证拒绝 token=%s status=%d body=%s",
 			mask(token), resp.StatusCode, bodyBytes)
 	}

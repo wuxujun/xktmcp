@@ -12,6 +12,17 @@ go run ./cmd/server/main.go -transport=http -port=8081
 go run ./cmd/server/main.go -transport=http -port=8081 -debug
 ```
 
+请求与响应内容日志默认关闭，避免把敏感业务数据直接写入日志。可通过环境变量开启：
+
+```bash
+LOG_HTTP_PAYLOADS=true LOG_HTTP_PAYLOAD_MAX_BYTES=1048576 go run ./cmd/server/main.go -transport=http -port=8081
+```
+
+- `LOG_HTTP_PAYLOADS`：是否记录所有 HTTP 请求 Body 与响应结果，默认 `false`。
+- `LOG_HTTP_PAYLOAD_MAX_BYTES`：单个请求或响应最多记录的字节数，默认 1 MiB；设为 `0` 表示完整记录且不截断。
+- 对应命令行参数为 `-log-http-payloads` 与 `-log-http-payload-max-bytes`，命令行参数优先。
+- 开启后使用 `category=http`、`direction=request|response`、`request_body`、`response_body` 等结构化字段。生产环境仅应在受控排障期间开启。
+
 ```bash
 # 打包 (使用 -trimpath 移除编译时的绝对文件路径)
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -tags=jsoniter -ldflags="-s -w" -o mcp-server ./cmd/server/main.go

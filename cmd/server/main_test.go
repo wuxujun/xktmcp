@@ -8,9 +8,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/wuxujun/xktmcp/internal/logger"
 	"github.com/wuxujun/xktmcp/internal/trace"
 )
 
@@ -105,5 +107,71 @@ func TestStreamableHTTPDiscoverSupports20260728(t *testing.T) {
 	}
 	if gotUserID != "remote-user-123" {
 		t.Fatalf("MCP request context userID = %q, want remote-user-123", gotUserID)
+	}
+}
+
+func TestRequestLoggingMiddlewareLogsPayloadsWithoutTruncatingRequest(t *testing.T) {
+	var logs bytes.Buffer
+	logger.Init(&logs)
+	requestBody := "0123456789"
+	responseBody := "abcdefghij"
+	var receivedBody string
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read request body: %v", err)
+		}
+		receivedBody = string(data)
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(responseBody))
+	})
+	middleware := requestLoggingMiddleware(handler, httpPayloadLogConfig{Enabled: true, MaxBytes: 4})
+	req := httptest.NewRequest(http.MethodPut, "/mcp?userId=u1", strings.NewReader(requestBody))
+	rec := httptest.NewRecorder()
+
+	middleware.ServeHTTP(rec, req)
+
+	if receivedBody != requestBody {
+		t.Fatalf("handler received body %q, want complete %q", receivedBody, requestBody)
+	}
+	if rec.Code != http.StatusCreated || rec.Body.String() != responseBody {
+		t.Fatalf("response = status %d body %q", rec.Code, rec.Body.String())
+	}
+	output := logs.String()
+	for _, expected := range []string{
+		`"category":"http"`,
+		`"direction":"request"`,
+		`"request_body":"0123"`,
+		`"request_body_truncated":true`,
+		`"direction":"response"`,
+		`"response_body":"abcd"`,
+		`"response_body_truncated":true`,
+		`"response_body_bytes":10`,
+	} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("log output missing %s:\n%s", expected, output)
+		}
+	}
+}
+
+func TestRequestLoggingMiddlewareOmitsPayloadsWhenDisabled(t *testing.T) {
+	var logs bytes.Buffer
+	logger.Init(&logs)
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		_, _ = w.Write([]byte("response-secret"))
+	})
+	middleware := requestLoggingMiddleware(handler, httpPayloadLogConfig{Enabled: false, MaxBytes: 4})
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader("request-secret"))
+
+	middleware.ServeHTTP(httptest.NewRecorder(), req)
+
+	output := logs.String()
+	if strings.Contains(output, "request_body") || strings.Contains(output, "response_body") ||
+		strings.Contains(output, "request-secret") || strings.Contains(output, "response-secret") {
+		t.Fatalf("disabled payload logging leaked body content:\n%s", output)
+	}
+	if !strings.Contains(output, `"direction":"request"`) || !strings.Contains(output, `"direction":"response"`) {
+		t.Fatalf("metadata logs missing while payload logging disabled:\n%s", output)
 	}
 }

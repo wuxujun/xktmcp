@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -31,6 +32,8 @@ func main() {
 	transport := flag.String("transport", "stdio", "传输方式: stdio, sse 或 http")
 	port := flag.Int("port", 8080, "HTTP/SSE 模式下的监听端口")
 	logFilePath := flag.String("logfile", "server.log", "日志文件路径")
+	logHTTPPayloads := flag.Bool("log-http-payloads", envBool("LOG_HTTP_PAYLOADS"), "是否记录 HTTP 请求 Body 与响应结果")
+	logHTTPPayloadMaxBytes := flag.Int64("log-http-payload-max-bytes", envInt64("LOG_HTTP_PAYLOAD_MAX_BYTES", 1024*1024), "单个 HTTP 请求/响应最多记录字节数；0 表示不截断")
 	authTokenFlag := flag.String("auth-token", "", "Bearer 本地令牌;留空则回退读取环境变量 AUTH_TOKEN")
 	wikiConfigPath := flag.String("wiki-config", "config/wiki.json", "Wiki 搜索后端配置文件路径")
 	flag.Parse()
@@ -47,6 +50,12 @@ func main() {
 
 	// 初始化全局日志
 	logger.Init(io.MultiWriter(os.Stderr, logWriter))
+	if *logHTTPPayloadMaxBytes < 0 {
+		logger.Errorf("日志配置非法: log-http-payload-max-bytes 不能小于 0")
+		os.Exit(1)
+	}
+	payloadLogConfig := httpPayloadLogConfig{Enabled: *logHTTPPayloads, MaxBytes: *logHTTPPayloadMaxBytes}
+	logger.Infof("HTTP 请求/响应内容日志 enabled=%t max_bytes=%d", payloadLogConfig.Enabled, payloadLogConfig.MaxBytes)
 
 	// 启动协程：每天凌晨自动切分日志 (按天记录)
 	go func() {
@@ -121,7 +130,7 @@ func main() {
 
 		addr := fmt.Sprintf(":%d", *port)
 		logger.Infof("正在通过 SSE 启动 xkt-student-server，监听地址 %s/sse...", addr)
-		runServer(addr, requestLoggingMiddleware(mux))
+		runServer(addr, requestLoggingMiddleware(mux, payloadLogConfig))
 
 	case "http":
 		// 创建 Streamable HTTP 处理器
@@ -140,7 +149,7 @@ func main() {
 
 		addr := fmt.Sprintf(":%d", *port)
 		logger.Infof("正在通过 Streamable HTTP 启动 xkt-mcp-server，监听地址 %s/mcp...", addr)
-		runServer(addr, requestLoggingMiddleware(mux))
+		runServer(addr, requestLoggingMiddleware(mux, payloadLogConfig))
 
 	default:
 		logger.Errorf("未知的传输方式: %s (请使用 stdio, sse 或 http)", *transport)
@@ -217,27 +226,80 @@ func envBool(key string) bool {
 	}
 }
 
+func envInt64(key string, fallback int64) int64 {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return fallback
+	}
+	return parsed
+}
+
+type httpPayloadLogConfig struct {
+	Enabled  bool
+	MaxBytes int64
+}
+
+type limitedBodyCapture struct {
+	body      bytes.Buffer
+	maxBytes  int64
+	total     int64
+	truncated bool
+}
+
+func newLimitedBodyCapture(maxBytes int64) *limitedBodyCapture {
+	return &limitedBodyCapture{maxBytes: maxBytes}
+}
+
+func (capture *limitedBodyCapture) Write(data []byte) (int, error) {
+	capture.total += int64(len(data))
+	remaining := capture.maxBytes - int64(capture.body.Len())
+	if capture.maxBytes == 0 {
+		remaining = int64(len(data))
+	}
+	if remaining > 0 {
+		writeSize := min(int64(len(data)), remaining)
+		_, _ = capture.body.Write(data[:writeSize])
+	}
+	if capture.maxBytes > 0 && capture.total > capture.maxBytes {
+		capture.truncated = true
+	}
+	return len(data), nil
+}
+
+func (capture *limitedBodyCapture) String() string { return capture.body.String() }
+
+type replayReadCloser struct {
+	io.Reader
+	io.Closer
+}
+
 // responseRecorder 包裹 http.ResponseWriter，捕获响应状态码和 body 副本。
 type responseRecorder struct {
 	http.ResponseWriter
-	statusCode int
-	body       bytes.Buffer
+	statusCode  int
+	wroteHeader bool
+	bodyCapture *limitedBodyCapture
 }
 
 func (rec *responseRecorder) WriteHeader(code int) {
+	if rec.wroteHeader {
+		return
+	}
+	rec.wroteHeader = true
 	rec.statusCode = code
 	rec.ResponseWriter.WriteHeader(code)
 }
 
 func (rec *responseRecorder) Write(b []byte) (int, error) {
-	// 只缓存前 8KB 用于日志，防止大响应占用过多内存
-	if rec.body.Len() < 8*1024 {
-		remaining := 8*1024 - rec.body.Len()
-		if len(b) <= remaining {
-			rec.body.Write(b)
-		} else {
-			rec.body.Write(b[:remaining])
-		}
+	if !rec.wroteHeader {
+		rec.WriteHeader(http.StatusOK)
+	}
+	if rec.bodyCapture != nil {
+		_, _ = rec.bodyCapture.Write(b)
 	}
 	return rec.ResponseWriter.Write(b)
 }
@@ -257,10 +319,10 @@ func (rec *responseRecorder) Unwrap() http.ResponseWriter {
 	return rec.ResponseWriter
 }
 
-// requestLoggingMiddleware 记录所有到达服务的 HTTP 请求方法、路径、来源 IP、
-// 关键请求头、Request Body 以及 Response 状态码和 Body（前 8KB）。
-func requestLoggingMiddleware(next http.Handler) http.Handler {
+// requestLoggingMiddleware 始终记录请求/响应元信息；仅在配置开启时记录 Body/结果。
+func requestLoggingMiddleware(next http.Handler, config httpPayloadLogConfig) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		startedAt := time.Now()
 		ip := auth.ClientIP(r)
 
 		// 提取关键请求头
@@ -269,29 +331,57 @@ func requestLoggingMiddleware(next http.Handler) http.Handler {
 		sessionID := r.Header.Get("Mcp-Session-Id")
 		hasAuth := r.Header.Get("Authorization") != ""
 
-		var bodyStr string
-		if r.Body != nil && r.Method == http.MethodPost {
-			bodyBytes, err := io.ReadAll(io.LimitReader(r.Body, 128*1024))
-			if err == nil {
-				r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
-				bodyStr = string(bodyBytes)
+		requestFields := map[string]any{
+			"method":         r.Method,
+			"path":           r.URL.RequestURI(),
+			"remote_ip":      ip,
+			"content_type":   contentType,
+			"accept":         accept,
+			"mcp_session_id": sessionID,
+			"has_auth":       hasAuth,
+		}
+		if config.Enabled && r.Body != nil && r.Body != http.NoBody {
+			originalBody := r.Body
+			reader := io.Reader(originalBody)
+			if config.MaxBytes > 0 {
+				reader = io.LimitReader(originalBody, config.MaxBytes+1)
+			}
+			prefix, readErr := io.ReadAll(reader)
+			capture := newLimitedBodyCapture(config.MaxBytes)
+			_, _ = capture.Write(prefix)
+			r.Body = &replayReadCloser{
+				Reader: io.MultiReader(bytes.NewReader(prefix), originalBody),
+				Closer: originalBody,
+			}
+			requestFields["request_body"] = capture.String()
+			requestFields["request_body_truncated"] = capture.truncated
+			requestFields["request_body_logged_bytes"] = capture.body.Len()
+			if readErr != nil {
+				requestFields["request_body_read_error"] = readErr.Error()
 			}
 		}
+		logger.HTTPCtx(r.Context(), "request", requestFields)
 
-		logger.InfofCtx(r.Context(),
-			"[HTTP-Req] %s %s from %s | Content-Type=%s Accept=%s Mcp-Session-Id=%s HasAuth=%v | body=%s",
-			r.Method, r.URL.RequestURI(), ip,
-			contentType, accept, sessionID, hasAuth,
-			bodyStr)
-
-		// 用 responseRecorder 包裹以捕获响应
-		rec := &responseRecorder{ResponseWriter: w, statusCode: 200}
+		var responseCapture *limitedBodyCapture
+		if config.Enabled {
+			responseCapture = newLimitedBodyCapture(config.MaxBytes)
+		}
+		rec := &responseRecorder{ResponseWriter: w, statusCode: http.StatusOK, bodyCapture: responseCapture}
 		next.ServeHTTP(rec, r)
 
-		logger.InfofCtx(r.Context(),
-			"[HTTP-Resp] %s %s -> status=%d respBody=%s",
-			r.Method, r.URL.RequestURI(), rec.statusCode,
-			rec.body.String())
+		responseFields := map[string]any{
+			"method":     r.Method,
+			"path":       r.URL.RequestURI(),
+			"status":     rec.statusCode,
+			"latency_ms": time.Since(startedAt).Milliseconds(),
+		}
+		if responseCapture != nil {
+			responseFields["response_body"] = responseCapture.String()
+			responseFields["response_body_truncated"] = responseCapture.truncated
+			responseFields["response_body_bytes"] = responseCapture.total
+			responseFields["response_body_logged_bytes"] = responseCapture.body.Len()
+		}
+		logger.HTTPCtx(r.Context(), "response", responseFields)
 	})
 }
 

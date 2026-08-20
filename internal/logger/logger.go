@@ -151,6 +151,16 @@ func APIfCtx(ctx context.Context, apiName string, format string, v ...any) {
 	logWithCaller(ctx, slog.LevelInfo, fmt.Sprintf(format, v...), slog.String("category", "api"), slog.String("api_name", apiName))
 }
 
+// HTTPCtx 写入结构化 HTTP 请求/响应日志。fields 中的业务内容由调用方按配置控制。
+func HTTPCtx(ctx context.Context, direction string, fields map[string]any) {
+	attrs := make([]slog.Attr, 0, len(fields)+2)
+	attrs = append(attrs, slog.String("category", "http"), slog.String("direction", direction))
+	for key, value := range fields {
+		attrs = append(attrs, slog.Any(key, value))
+	}
+	logWithCaller(ctx, slog.LevelInfo, "http_"+direction, attrs...)
+}
+
 // AuditCtx 写一条结构化审计日志(category=audit),记录「谁查了谁、用哪个工具、结果如何」。
 // fields 里的键值会作为独立 JSON 字段输出;trace_id 由 context 自动注入。
 // 调用方须确保 fields 中不含未脱敏的明文 PII(手机号/证件号应先经 pii 包处理)。
