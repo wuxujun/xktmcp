@@ -73,6 +73,14 @@ type WikiGetBacklinksArgs struct {
 
 func (a WikiGetBacklinksArgs) AuditSubject() string { return a.PageID }
 
+type WikiSearchResponse struct {
+	Items []model.WikiSearchResult `json:"items"`
+}
+
+type WikiBacklinksResponse struct {
+	Items []model.WikiBacklink `json:"items"`
+}
+
 // --- Tool 声明 ---
 
 func WikiSearchTool() *mcp.Tool {
@@ -80,7 +88,7 @@ func WikiSearchTool() *mcp.Tool {
 		Name:         "wiki_search",
 		Description:  `知识库 Wiki 检索工具。根据关键词与分类搜索词条概览。当需要查找某概念、规范、业务说明或产品维基词条时调用。`,
 		InputSchema:  publicSchema[WikiSearchArgs](envelopeFields),
-		OutputSchema: outputSchema[[]model.WikiSearchResult](),
+		OutputSchema: outputSchema[WikiSearchResponse](),
 	}
 }
 
@@ -99,18 +107,24 @@ func WikiListTreeTool() *mcp.Tool {
 		Description: `获取知识库 Wiki 的层级目录大纲与分类树。用于梳理知识框架、探索上下级分类或浏览词条结构。`,
 		InputSchema: publicSchema[WikiListTreeArgs](envelopeFields),
 		OutputSchema: &jsonschema.Schema{
-			Type: "array",
-			Items: &jsonschema.Schema{
-				Type: "object",
-				Properties: map[string]*jsonschema.Schema{
-					"id":           {Type: "string", Description: "节点唯一标识"},
-					"title":        {Type: "string", Description: "节点标题/分类名"},
-					"category":     {Type: "string", Description: "分类"},
-					"has_children": {Type: "boolean", Description: "是否有子节点"},
-					"children":     {Type: "array", Description: "子节点列表"},
+			Type: "object",
+			Properties: map[string]*jsonschema.Schema{
+				"items": {
+					Type: "array",
+					Items: &jsonschema.Schema{
+						Type: "object",
+						Properties: map[string]*jsonschema.Schema{
+							"id":           {Type: "string", Description: "节点唯一标识"},
+							"title":        {Type: "string", Description: "节点标题/分类名"},
+							"category":     {Type: "string", Description: "分类"},
+							"has_children": {Type: "boolean", Description: "是否有子节点"},
+							"children":     {Type: "array", Description: "子节点列表"},
+						},
+						Required: []string{"id", "title", "has_children"},
+					},
 				},
-				Required: []string{"id", "title", "has_children"},
 			},
+			Required: []string{"items"},
 		},
 	}
 }
@@ -129,7 +143,7 @@ func WikiGetBacklinksTool() *mcp.Tool {
 		Name:         "wiki_get_backlinks",
 		Description:  `获取引用了指定 Wiki 词条的所有反向关联词条列表。用于探索知识图谱关系与上下游依赖。`,
 		InputSchema:  publicSchema[WikiGetBacklinksArgs](envelopeFields),
-		OutputSchema: outputSchema[[]model.WikiBacklink](),
+		OutputSchema: outputSchema[WikiBacklinksResponse](),
 	}
 }
 
@@ -172,8 +186,9 @@ func WikiSearchHandler(
 				&mcp.TextContent{Text: text},
 			},
 		}
-		wikiCache.Set(cacheKey, toolResultItem{result: res, data: redacted}, wikiSearchTTL)
-		return res, redacted, nil
+		structured := map[string]any{"items": redacted}
+		wikiCache.Set(cacheKey, toolResultItem{result: res, data: structured}, wikiSearchTTL)
+		return res, structured, nil
 	}
 }
 
@@ -251,8 +266,9 @@ func WikiListTreeHandler(
 				&mcp.TextContent{Text: text},
 			},
 		}
-		wikiCache.Set(cacheKey, toolResultItem{result: res, data: redacted}, wikiTreeTTL)
-		return res, redacted, nil
+		structured := map[string]any{"items": redacted}
+		wikiCache.Set(cacheKey, toolResultItem{result: res, data: structured}, wikiTreeTTL)
+		return res, structured, nil
 	}
 }
 
@@ -309,6 +325,6 @@ func WikiGetBacklinksHandler(
 				&mcp.TextContent{Text: text},
 			},
 		}
-		return res, redacted, nil
+		return res, map[string]any{"items": redacted}, nil
 	}
 }

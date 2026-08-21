@@ -157,15 +157,70 @@ func main() {
 	}
 }
 
-// newStreamableHTTPHandler 创建同时兼容旧版有握手协议和 2026-07-28
-// 无会话协议的 Streamable HTTP 处理器。MCP Go SDK 仅在 Stateless 模式下
-// 将 2026-07-28 加入 server/discover 的 supportedVersions，并接受该版本请求。
+const protocolDetectionMaxBytes = 4 << 20
+
+// newStreamableHTTPHandler 按协议版本选择传输语义：legacy 协议使用有状态会话并
+// 返回 application/json，2026-07-28 使用无会话模式并保持 text/event-stream。
 func newStreamableHTTPHandler(server *mcp.Server) http.Handler {
-	return mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
+	getServer := func(*http.Request) *mcp.Server {
 		return server
-	}, &mcp.StreamableHTTPOptions{
+	}
+	legacyJSONHandler := mcp.NewStreamableHTTPHandler(getServer, &mcp.StreamableHTTPOptions{
+		JSONResponse: true,
+	})
+	modernSSEHandler := mcp.NewStreamableHTTPHandler(getServer, &mcp.StreamableHTTPOptions{
 		Stateless: true,
 	})
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		protocolVersion := requestProtocolVersion(r)
+		if isLegacyProtocolVersion(protocolVersion) {
+			legacyJSONHandler.ServeHTTP(w, r)
+			return
+		}
+		modernSSEHandler.ServeHTTP(w, r)
+	})
+}
+
+func requestProtocolVersion(r *http.Request) string {
+	if version := strings.TrimSpace(r.Header.Get("Mcp-Protocol-Version")); version != "" {
+		return version
+	}
+	if r.Method != http.MethodPost || r.Body == nil || r.Body == http.NoBody {
+		return ""
+	}
+	originalBody := r.Body
+	body, err := io.ReadAll(io.LimitReader(originalBody, protocolDetectionMaxBytes+1))
+	r.Body = &replayReadCloser{
+		Reader: io.MultiReader(bytes.NewReader(body), originalBody),
+		Closer: originalBody,
+	}
+	if err != nil || len(body) > protocolDetectionMaxBytes {
+		return ""
+	}
+	var envelope struct {
+		Params struct {
+			ProtocolVersion string                     `json:"protocolVersion"`
+			Meta            map[string]json.RawMessage `json:"_meta"`
+		} `json:"params"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return ""
+	}
+	if version := strings.TrimSpace(envelope.Params.ProtocolVersion); version != "" {
+		return version
+	}
+	var version string
+	_ = json.Unmarshal(envelope.Params.Meta["io.modelcontextprotocol/protocolVersion"], &version)
+	return strings.TrimSpace(version)
+}
+
+func isLegacyProtocolVersion(version string) bool {
+	switch version {
+	case "2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05":
+		return true
+	default:
+		return false
+	}
 }
 
 // buildAuthConfig 从环境变量装配认证配置。
@@ -329,16 +384,22 @@ func requestLoggingMiddleware(next http.Handler, config httpPayloadLogConfig) ht
 		contentType := r.Header.Get("Content-Type")
 		accept := r.Header.Get("Accept")
 		sessionID := r.Header.Get("Mcp-Session-Id")
+		protocolVersion := r.Header.Get("Mcp-Protocol-Version")
+		mcpMethod := r.Header.Get("Mcp-Method")
 		hasAuth := r.Header.Get("Authorization") != ""
 
 		requestFields := map[string]any{
-			"method":         r.Method,
-			"path":           r.URL.RequestURI(),
-			"remote_ip":      ip,
-			"content_type":   contentType,
-			"accept":         accept,
-			"mcp_session_id": sessionID,
-			"has_auth":       hasAuth,
+			"method":               r.Method,
+			"path":                 r.URL.RequestURI(),
+			"remote_ip":            ip,
+			"host":                 r.Host,
+			"content_type":         contentType,
+			"accept":               accept,
+			"mcp_protocol_version": protocolVersion,
+			"mcp_session_id":       sessionID,
+			"mcp_method":           mcpMethod,
+			"has_auth":             hasAuth,
+			"request_headers":      safeRequestHeaders(r.Header),
 		}
 		if config.Enabled && r.Body != nil && r.Body != http.NoBody {
 			originalBody := r.Body
@@ -383,6 +444,29 @@ func requestLoggingMiddleware(next http.Handler, config httpPayloadLogConfig) ht
 		}
 		logger.HTTPCtx(r.Context(), "response", responseFields)
 	})
+}
+
+func safeRequestHeaders(headers http.Header) map[string][]string {
+	safe := make(map[string][]string, len(headers))
+	for key, values := range headers {
+		copied := append([]string(nil), values...)
+		if sensitiveRequestHeader(key) {
+			for i := range copied {
+				copied[i] = "[REDACTED]"
+			}
+		}
+		safe[http.CanonicalHeaderKey(key)] = copied
+	}
+	return safe
+}
+
+func sensitiveRequestHeader(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "authorization", "proxy-authorization", "cookie", "set-cookie", "x-api-key", "api-key":
+		return true
+	default:
+		return false
+	}
 }
 
 // userIDMiddleware 从 URL query string (?userId=xxx) 读取 userId,

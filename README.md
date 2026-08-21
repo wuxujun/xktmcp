@@ -22,6 +22,9 @@ LOG_HTTP_PAYLOADS=true LOG_HTTP_PAYLOAD_MAX_BYTES=1048576 go run ./cmd/server/ma
 - `LOG_HTTP_PAYLOAD_MAX_BYTES`：单个请求或响应最多记录的字节数，默认 1 MiB；设为 `0` 表示完整记录且不截断。
 - 对应命令行参数为 `-log-http-payloads` 与 `-log-http-payload-max-bytes`，命令行参数优先。
 - 开启后使用 `category=http`、`direction=request|response`、`request_body`、`response_body` 等结构化字段。生产环境仅应在受控排障期间开启。
+- 请求元信息日志始终包含安全化的 `request_headers`，并单独提供 `mcp_protocol_version`、`mcp_session_id`、`mcp_method`；认证、Cookie 和 API Key 类 Header 仅记录为 `[REDACTED]`。
+
+Streamable HTTP 会按 MCP 协议版本选择传输方式：`2025-11-25` 及更早版本使用有状态会话并返回 `application/json`，`2026-07-28` 使用无会话模式并返回 `text/event-stream`。客户端请求仍需声明 `Accept: application/json, text/event-stream`；legacy 客户端应通过 `initialize` 协商版本，并在后续请求携带响应中的 `Mcp-Session-Id` 和 `Mcp-Protocol-Version`。
 
 ```bash
 # 打包 (使用 -trimpath 移除编译时的绝对文件路径)

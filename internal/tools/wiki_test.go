@@ -72,6 +72,9 @@ func TestWikiSearchHandler(t *testing.T) {
 	if data == nil {
 		t.Fatalf("expected non-nil data")
 	}
+	if _, ok := data.(map[string]any)["items"]; !ok {
+		t.Fatalf("expected object data containing items, got %#v", data)
+	}
 }
 
 func TestWikiGetPageHandler(t *testing.T) {
@@ -127,6 +130,9 @@ func TestWikiListTreeHandler(t *testing.T) {
 	if data == nil {
 		t.Fatalf("expected non-nil data")
 	}
+	if _, ok := data.(map[string]any)["items"]; !ok {
+		t.Fatalf("expected object data containing items, got %#v", data)
+	}
 }
 
 func TestWikiGetBacklinksHandler(t *testing.T) {
@@ -144,5 +150,7 @@ func TestWikiGetBacklinksHandler(t *testing.T) {
 	if data == nil {
 		t.Fatalf("expected non-nil data")
 	}
+	if _, ok := data.(map[string]any)["items"]; !ok {
+		t.Fatalf("expected object data containing items, got %#v", data)
+	}
 }
-

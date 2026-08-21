@@ -16,7 +16,10 @@ import (
 	"github.com/wuxujun/xktmcp/internal/trace"
 )
 
-const protocolVersion20260728 = "2026-07-28"
+const (
+	protocolVersion20251125 = "2025-11-25"
+	protocolVersion20260728 = "2026-07-28"
+)
 
 func TestUserIDMiddlewareInjectsQueryUserID(t *testing.T) {
 	var got string
@@ -81,6 +84,9 @@ func TestStreamableHTTPDiscoverSupports20260728(t *testing.T) {
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body = %s", res.StatusCode, responseBody)
 	}
+	if contentType := res.Header.Get("Content-Type"); !strings.HasPrefix(contentType, "text/event-stream") {
+		t.Fatalf("Content-Type = %q, want text/event-stream for 2026-07-28", contentType)
+	}
 
 	// Streamable HTTP 可返回 JSON 或单条 SSE 事件，两种格式均需验证。
 	payload := responseBody
@@ -107,6 +113,99 @@ func TestStreamableHTTPDiscoverSupports20260728(t *testing.T) {
 	}
 	if gotUserID != "remote-user-123" {
 		t.Fatalf("MCP request context userID = %q, want remote-user-123", gotUserID)
+	}
+}
+
+func TestStreamableHTTPInitialize20251125ReturnsJSON(t *testing.T) {
+	server := mcp.NewServer(&mcp.Implementation{Name: "test-server", Version: "1.0.0"}, nil)
+	mcp.AddTool(server, &mcp.Tool{Name: "legacy_tool", Description: "legacy protocol test tool"},
+		func(context.Context, *mcp.CallToolRequest, struct{}) (*mcp.CallToolResult, any, error) {
+			return &mcp.CallToolResult{}, nil, nil
+		})
+	handler := newStreamableHTTPHandler(server)
+	body := []byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"legacy-client","version":"1.0.0"}}}`)
+	req := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	res := rec.Result()
+	defer res.Body.Close()
+	responseBody, err := io.ReadAll(res.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", res.StatusCode, responseBody)
+	}
+	if contentType := res.Header.Get("Content-Type"); !strings.HasPrefix(contentType, "application/json") {
+		t.Fatalf("Content-Type = %q, want application/json; body = %s", contentType, responseBody)
+	}
+	var rpcResponse struct {
+		Result struct {
+			ProtocolVersion string `json:"protocolVersion"`
+		} `json:"result"`
+		Error json.RawMessage `json:"error"`
+	}
+	if err := json.Unmarshal(responseBody, &rpcResponse); err != nil {
+		t.Fatalf("response is not directly parseable JSON: %q: %v", responseBody, err)
+	}
+	if rpcResponse.Result.ProtocolVersion != protocolVersion20251125 {
+		t.Fatalf("protocolVersion = %q, want %q", rpcResponse.Result.ProtocolVersion, protocolVersion20251125)
+	}
+	sessionID := res.Header.Get("Mcp-Session-Id")
+	if sessionID == "" {
+		t.Fatal("2025-11-25 initialize response did not return Mcp-Session-Id")
+	}
+
+	initializedReq := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","method":"notifications/initialized"}`))
+	setLegacyMCPHeaders(initializedReq, sessionID)
+	initializedRec := httptest.NewRecorder()
+	handler.ServeHTTP(initializedRec, initializedReq)
+	if initializedRec.Code != http.StatusAccepted {
+		t.Fatalf("notifications/initialized status = %d, want 202; body = %s", initializedRec.Code, initializedRec.Body.String())
+	}
+
+	listReq := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`))
+	setLegacyMCPHeaders(listReq, sessionID)
+	listRec := httptest.NewRecorder()
+	handler.ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("tools/list status = %d, want 200; body = %s", listRec.Code, listRec.Body.String())
+	}
+	if contentType := listRec.Header().Get("Content-Type"); !strings.HasPrefix(contentType, "application/json") {
+		t.Fatalf("tools/list Content-Type = %q, want application/json", contentType)
+	}
+	var listResponse struct {
+		Result struct {
+			Tools []struct {
+				Name string `json:"name"`
+			} `json:"tools"`
+		} `json:"result"`
+		Error json.RawMessage `json:"error"`
+	}
+	if err := json.Unmarshal(listRec.Body.Bytes(), &listResponse); err != nil {
+		t.Fatalf("tools/list response is not JSON: %q: %v", listRec.Body.String(), err)
+	}
+	if len(listResponse.Result.Tools) != 1 || listResponse.Result.Tools[0].Name != "legacy_tool" {
+		t.Fatalf("tools/list result = %+v, want legacy_tool; error=%s", listResponse.Result.Tools, listResponse.Error)
+	}
+}
+
+func setLegacyMCPHeaders(req *http.Request, sessionID string) {
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	req.Header.Set("Mcp-Protocol-Version", protocolVersion20251125)
+	req.Header.Set("Mcp-Session-Id", sessionID)
+}
+
+func TestRequestProtocolVersionUsesHeaderAfterInitialization(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`))
+	req.Header.Set("Mcp-Protocol-Version", protocolVersion20251125)
+	if got := requestProtocolVersion(req); got != protocolVersion20251125 {
+		t.Fatalf("requestProtocolVersion = %q, want %q", got, protocolVersion20251125)
 	}
 }
 
@@ -163,6 +262,9 @@ func TestRequestLoggingMiddlewareOmitsPayloadsWhenDisabled(t *testing.T) {
 	})
 	middleware := requestLoggingMiddleware(handler, httpPayloadLogConfig{Enabled: false, MaxBytes: 4})
 	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader("request-secret"))
+	req.Header.Set("Mcp-Protocol-Version", protocolVersion20251125)
+	req.Header.Set("Mcp-Session-Id", "session-123")
+	req.Header.Set("Authorization", "Bearer super-secret-token")
 
 	middleware.ServeHTTP(httptest.NewRecorder(), req)
 
@@ -173,5 +275,12 @@ func TestRequestLoggingMiddlewareOmitsPayloadsWhenDisabled(t *testing.T) {
 	}
 	if !strings.Contains(output, `"direction":"request"`) || !strings.Contains(output, `"direction":"response"`) {
 		t.Fatalf("metadata logs missing while payload logging disabled:\n%s", output)
+	}
+	if !strings.Contains(output, `"mcp_protocol_version":"2025-11-25"`) ||
+		!strings.Contains(output, `"mcp_session_id":"session-123"`) {
+		t.Fatalf("MCP request headers missing from log:\n%s", output)
+	}
+	if strings.Contains(output, "super-secret-token") || !strings.Contains(output, "[REDACTED]") {
+		t.Fatalf("sensitive request header was not redacted:\n%s", output)
 	}
 }

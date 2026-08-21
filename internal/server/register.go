@@ -9,6 +9,7 @@ import (
 	"github.com/wuxujun/xktmcp/internal/logger"
 	"github.com/wuxujun/xktmcp/internal/metrics"
 	"github.com/wuxujun/xktmcp/internal/pii"
+	"github.com/wuxujun/xktmcp/internal/prompts"
 	"github.com/wuxujun/xktmcp/internal/service"
 	"github.com/wuxujun/xktmcp/internal/tools"
 	"github.com/wuxujun/xktmcp/internal/trace"
@@ -28,6 +29,8 @@ type auditable interface {
 
 // RegisterAll 装配依赖并注册所有 MCP 工具(均带统一埋点:trace id + 指标 + 摘要日志)。
 func RegisterAll(s *mcp.Server, wikiConfigPaths ...string) error {
+	prompts.RegisterAll(s)
+
 	baseCfg, err := client.LoadConfigFromEnv()
 	if err != nil {
 		return err

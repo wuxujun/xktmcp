@@ -55,6 +55,12 @@ type StudentSearchArgs struct {
 	PageSize int    `json:"page_size,omitempty" jsonschema:"每页返回条数，默认 20，最大 100"`
 }
 
+type StudentSearchResponse struct {
+	Items    []model.Student `json:"items"`
+	Page     int             `json:"page"`
+	PageSize int             `json:"page_size"`
+}
+
 // AuditSubject 返回被查询主体(供审计记录,会在上层脱敏后落日志)。
 func (a StudentSearchArgs) AuditSubject() string { return a.Query }
 
@@ -71,7 +77,7 @@ func StudentSearchTool() *mcp.Tool {
 		Name:         "student_search",
 		Description:  `用于根据姓名等模糊信息查询学员基本信息。当用户询问某学员的信息，或你需要获取某学员的 ID 以便后续查询其订单、考试成绩时，必须【优先调用】此工具。返回数据中包含学员的唯一标识（id / smp_id），请提取该 ID 用于后续的其他查询工具。若未找到学员，请直接告知用户"未找到该学员信息"。支持分页：page 从 1 开始，page_size 默认 20、最大 100；同名学员较多时可翻页获取更多结果。`,
 		InputSchema:  publicSchema[StudentSearchArgs](envelopeFields),
-		OutputSchema: outputSchema[[]model.Student](),
+		OutputSchema: outputSchema[StudentSearchResponse](),
 	}
 }
 
@@ -101,7 +107,6 @@ func StudentGetTool() *mcp.Tool {
 		OutputSchema: outputSchema[model.Student](),
 	}
 }
-
 
 func StudentSearchHandler(
 	svc *service.StudentService,
