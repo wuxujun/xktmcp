@@ -1,5 +1,7 @@
 # Authentication Boundary Hardening Design
 
+[中文版](2026-08-30-auth-boundary-hardening-design.zh-CN.md)
+
 Date: 2026-08-30
 
 ## 1. Objective
