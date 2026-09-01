@@ -45,3 +45,26 @@ func TestLocalSearcherGetBacklinks(t *testing.T) {
 		t.Fatalf("backlink context missing: %+v", links)
 	}
 }
+
+func TestLocalSearcherIndexesBacklinksDuringRefresh(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "wiki")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "target.md"), []byte("---\npage_id: target\ntitle: Target\n---\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "source.md"), []byte("---\npage_id: source\ntitle: Source\n---\nSee [target](target.md).\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	searcher, err := NewLocalSearcher(LocalConfig{Root: root, ContentDirs: []string{"wiki"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	links, ok := searcher.backlinks["target"]
+	if !ok || len(links) != 1 || links[0].SourcePageID != "source" {
+		t.Fatalf("backlinks index = %+v, want source backlink for target", searcher.backlinks)
+	}
+}

@@ -17,7 +17,7 @@ var (
 	wikiLinkPattern     = regexp.MustCompile(`\[\[([^]|#]+)(?:#[^]|]+)?(?:\|[^]]+)?\]\]`)
 )
 
-// GetBacklinks 扫描标准 Markdown 链接及 [[wiki links]]，返回引用目标页面的来源页面。
+// GetBacklinks 从本地索引读取标准 Markdown 链接及 [[wiki links]] 的反向链接。
 func (s *LocalSearcher) GetBacklinks(ctx context.Context, _ string, pageID string) ([]model.WikiBacklink, error) {
 	if err := s.refresh(ctx, false); err != nil {
 		return nil, err
@@ -27,29 +27,40 @@ func (s *LocalSearcher) GetBacklinks(ctx context.Context, _ string, pageID strin
 		return nil, err
 	}
 
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	s.mu.RLock()
-	documents := append([]localDocument(nil), s.documents...)
+	links := append([]model.WikiBacklink(nil), s.backlinks[target.result.PageID]...)
 	s.mu.RUnlock()
-	links := make([]model.WikiBacklink, 0)
-	for _, source := range documents {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		if source.result.PageID == target.result.PageID {
-			continue
-		}
-		if line, ok := backlinkContext(source, target); ok {
-			links = append(links, model.WikiBacklink{
-				SourcePageID: source.result.PageID,
-				SourceTitle:  source.result.Title,
-				Context:      truncateContext(line, 240),
-			})
+	return links, nil
+}
+
+func buildBacklinks(ctx context.Context, documents []localDocument) (map[string][]model.WikiBacklink, error) {
+	backlinks := make(map[string][]model.WikiBacklink)
+	for _, target := range documents {
+		for _, source := range documents {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			if source.result.PageID == target.result.PageID {
+				continue
+			}
+			if line, ok := backlinkContext(source, target); ok {
+				backlinks[target.result.PageID] = append(backlinks[target.result.PageID], model.WikiBacklink{
+					SourcePageID: source.result.PageID,
+					SourceTitle:  source.result.Title,
+					Context:      truncateContext(line, 240),
+				})
+			}
 		}
 	}
-	sort.SliceStable(links, func(i, j int) bool {
-		return strings.ToLower(links[i].SourceTitle) < strings.ToLower(links[j].SourceTitle)
-	})
-	return links, nil
+	for key := range backlinks {
+		sort.SliceStable(backlinks[key], func(i, j int) bool {
+			return strings.ToLower(backlinks[key][i].SourceTitle) < strings.ToLower(backlinks[key][j].SourceTitle)
+		})
+	}
+	return backlinks, nil
 }
 
 func backlinkContext(source, target localDocument) (string, bool) {

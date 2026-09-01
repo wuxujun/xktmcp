@@ -29,6 +29,7 @@ type LocalSearcher struct {
 	mu          sync.RWMutex
 	writeMu     sync.Mutex
 	documents   []localDocument
+	backlinks   map[string][]model.WikiBacklink
 	nextRefresh time.Time
 }
 
@@ -154,7 +155,12 @@ func (s *LocalSearcher) refresh(ctx context.Context, force bool) error {
 		}
 	}
 
+	backlinks, err := buildBacklinks(ctx, documents)
+	if err != nil {
+		return err
+	}
 	s.documents = documents
+	s.backlinks = backlinks
 	s.nextRefresh = time.Now().Add(s.cfg.RefreshInterval())
 	return nil
 }
