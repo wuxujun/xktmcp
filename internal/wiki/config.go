@@ -23,12 +23,14 @@ type Config struct {
 
 // LocalConfig 描述本地 llm-wiki 文章目录与索引刷新策略。
 type LocalConfig struct {
-	Root                   string   `json:"root"`
-	ContentDirs            []string `json:"content_dirs"`
-	WriteDir               string   `json:"write_dir"`
-	DefaultCategory        string   `json:"default_category"`
-	RefreshIntervalSeconds int      `json:"refresh_interval_seconds"`
-	MaxFileSizeBytes       int64    `json:"max_file_size_bytes"`
+	Root                   string                 `json:"root"`
+	ContentDirs            []string               `json:"content_dirs"`
+	WriteDir               string                 `json:"write_dir"`
+	DefaultCategory        string                 `json:"default_category"`
+	RefreshIntervalSeconds int                    `json:"refresh_interval_seconds"`
+	MaxFileSizeBytes       int64                  `json:"max_file_size_bytes"`
+	Users                  map[string]LocalConfig `json:"users,omitempty"`
+	RequireUserMapping     bool                   `json:"require_user_mapping,omitempty"`
 }
 
 // LoadConfig 加载 Wiki 配置。配置文件不存在时保持历史行为，使用 HTTP 后端。
@@ -73,9 +75,42 @@ func LoadConfig(path string) (Config, error) {
 }
 
 func normalizeLocalConfig(cfg *LocalConfig, configDir string) error {
+	users := cfg.Users
+	requireUserMapping := cfg.RequireUserMapping
+	cfg.Users = nil
+	cfg.RequireUserMapping = false
+	if err := normalizeLocalDirectory(cfg, configDir, "wiki local"); err != nil {
+		return err
+	}
+	if requireUserMapping && len(users) == 0 {
+		return errors.New("wiki local.require_user_mapping requires at least one local.users entry")
+	}
+	normalizedUsers := make(map[string]LocalConfig, len(users))
+	for rawUserID, userCfg := range users {
+		userID := strings.TrimSpace(rawUserID)
+		if userID == "" {
+			return errors.New("wiki local.users contains an empty userId")
+		}
+		if userID != rawUserID {
+			return fmt.Errorf("wiki local.users key %q must not contain surrounding whitespace", rawUserID)
+		}
+		if len(userCfg.Users) > 0 || userCfg.RequireUserMapping {
+			return fmt.Errorf("wiki local.users[%q] must not contain nested routing settings", userID)
+		}
+		if err := normalizeLocalDirectory(&userCfg, configDir, fmt.Sprintf("wiki local.users[%q]", userID)); err != nil {
+			return err
+		}
+		normalizedUsers[userID] = userCfg
+	}
+	cfg.Users = normalizedUsers
+	cfg.RequireUserMapping = requireUserMapping
+	return nil
+}
+
+func normalizeLocalDirectory(cfg *LocalConfig, configDir, fieldPrefix string) error {
 	root := strings.TrimSpace(cfg.Root)
 	if root == "" {
-		return errors.New("wiki local.root must not be empty in local mode")
+		return fmt.Errorf("%s.root must not be empty in local mode", fieldPrefix)
 	}
 	if strings.HasPrefix(root, "~/") {
 		home, err := os.UserHomeDir()
@@ -103,7 +138,7 @@ func normalizeLocalConfig(cfg *LocalConfig, configDir string) error {
 		cfg.ContentDirs = []string{"wiki"}
 	}
 	for i, dir := range cfg.ContentDirs {
-		clean, err := cleanRelativePath(dir, "wiki local.content_dirs entry")
+		clean, err := cleanRelativePath(dir, fieldPrefix+".content_dirs entry")
 		if err != nil {
 			return err
 		}
@@ -112,12 +147,12 @@ func normalizeLocalConfig(cfg *LocalConfig, configDir string) error {
 	if strings.TrimSpace(cfg.WriteDir) == "" {
 		cfg.WriteDir = filepath.Join(cfg.ContentDirs[0], "topics")
 	}
-	writeDir, err := cleanRelativePath(cfg.WriteDir, "wiki local.write_dir")
+	writeDir, err := cleanRelativePath(cfg.WriteDir, fieldPrefix+".write_dir")
 	if err != nil {
 		return err
 	}
 	if !withinAnyContentDir(writeDir, cfg.ContentDirs) {
-		return fmt.Errorf("wiki local.write_dir %q must be inside a configured content_dir", cfg.WriteDir)
+		return fmt.Errorf("%s.write_dir %q must be inside a configured content_dir", fieldPrefix, cfg.WriteDir)
 	}
 	cfg.WriteDir = writeDir
 	cfg.DefaultCategory = strings.TrimSpace(cfg.DefaultCategory)

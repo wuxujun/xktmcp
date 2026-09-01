@@ -110,3 +110,31 @@ HTTP 模式继续调用 `BASE_URL/api/ai/wiki/search`：
 ```
 
 默认读取 `config/wiki.json`，也可以通过 `-wiki-config=/path/to/wiki.json` 指定。配置文件不存在时默认使用 HTTP。Local 模式下，读取覆盖所有 `content_dirs`；新建、覆盖和追加只允许写入 `write_dir`（默认 `wiki/topics`），每次成功写入都会追加根目录 `log.md` 并立即刷新本地索引。反向链接同时识别相对 Markdown 链接和 `[[wiki link]]`。
+
+Local 模式可以按 `userId` 显式映射不同目录。映射的每个用户拥有独立的搜索索引、目录树、页面、反向链接及写入目录；服务不会把 `userId` 直接拼接成文件路径：
+
+```json
+{
+  "mode": "local",
+  "local": {
+    "root": "../.wiki-default",
+    "content_dirs": ["wiki"],
+    "write_dir": "wiki/topics",
+    "require_user_mapping": true,
+    "users": {
+      "user-a": {
+        "root": "../.wiki-user-a",
+        "content_dirs": ["wiki"],
+        "write_dir": "wiki/topics"
+      },
+      "user-b": {
+        "root": "../.wiki-user-b",
+        "content_dirs": ["wiki"],
+        "write_dir": "wiki/topics"
+      }
+    }
+  }
+}
+```
+
+`require_user_mapping=true` 时，缺少 `userId` 或未配置的用户会返回错误，避免意外读取默认库；为 `false`（默认）时，未映射用户继续使用顶层 `local.root`，兼容原有单目录配置。

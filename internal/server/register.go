@@ -66,14 +66,15 @@ func RegisterAll(s *mcp.Server, wikiConfigPaths ...string) error {
 	}
 	var wikiBackend service.WikiBackend = wikiAPI
 	if wikiConfig.Mode == wikibackend.ModeLocal {
-		localSearcher, localErr := wikibackend.NewLocalSearcher(wikiConfig.Local)
+		localSearcher, localErr := wikibackend.NewLocalRouter(wikiConfig.Local)
 		err = localErr
 		if err != nil {
 			return err
 		}
 		wikiBackend = localSearcher
-		logger.Infof("Wiki 后端: local root=%s content_dirs=%v write_dir=%s indexed_documents=%d",
-			wikiConfig.Local.Root, wikiConfig.Local.ContentDirs, wikiConfig.Local.WriteDir, localSearcher.DocumentCount())
+		logger.Infof("Wiki 后端: local root=%s content_dirs=%v write_dir=%s configured_users=%d strict_user_mapping=%t indexed_documents=%d",
+			wikiConfig.Local.Root, wikiConfig.Local.ContentDirs, wikiConfig.Local.WriteDir, localSearcher.UserCount(),
+			wikiConfig.Local.RequireUserMapping, localSearcher.DocumentCount())
 	} else {
 		logger.Infof("Wiki 后端: http base_url=%s", baseCfg.BaseURL)
 	}

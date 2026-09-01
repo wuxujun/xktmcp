@@ -74,3 +74,37 @@ func TestLoadConfigRejectsWriteDirOutsideContentDirs(t *testing.T) {
 		t.Fatal("LoadConfig accepted write_dir outside content_dirs")
 	}
 }
+
+func TestLoadConfigNormalizesPerUserDirectories(t *testing.T) {
+	dir := t.TempDir()
+	for _, path := range []string{"default/wiki", "alice/wiki", "bob/wiki"} {
+		if err := os.MkdirAll(filepath.Join(dir, path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	configPath := filepath.Join(dir, "wiki.json")
+	config := `{
+  "mode":"local",
+  "local":{
+    "root":"default",
+    "require_user_mapping":true,
+    "users":{
+      "alice":{"root":"alice"},
+      "bob":{"root":"bob"}
+    }
+  }
+}`
+	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig returned error: %v", err)
+	}
+	if got := cfg.Local.Users["alice"].Root; got != filepath.Join(dir, "alice") {
+		t.Fatalf("alice root = %q", got)
+	}
+	if !cfg.Local.RequireUserMapping {
+		t.Fatal("require_user_mapping = false, want true")
+	}
+}
