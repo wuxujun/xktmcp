@@ -15,7 +15,7 @@ func RegisterAll(server *mcp.Server, enabledTools ...map[string]bool) {
 	if len(enabledTools) > 0 {
 		enabled = enabledTools[0]
 	}
-	if toolEnabled(enabled, "student_search") {
+	if toolsEnabled(enabled, "student_search", "student_get", "student_order", "student_exam") {
 		server.AddPrompt(&mcp.Prompt{
 			Name:        "student_inquiry",
 			Title:       "学员信息查询",
@@ -27,7 +27,7 @@ func RegisterAll(server *mcp.Server, enabledTools ...map[string]bool) {
 		}, studentInquiry)
 	}
 
-	if toolEnabled(enabled, "wiki_search") {
+	if toolsEnabled(enabled, "wiki_search", "wiki_get_page", "wiki_list_tree", "wiki_get_backlinks") {
 		server.AddPrompt(&mcp.Prompt{
 			Name:        "wiki_research",
 			Title:       "Wiki 知识检索",
@@ -53,6 +53,15 @@ func RegisterAll(server *mcp.Server, enabledTools ...map[string]bool) {
 
 func toolEnabled(enabled map[string]bool, name string) bool {
 	return enabled == nil || enabled[name]
+}
+
+func toolsEnabled(enabled map[string]bool, names ...string) bool {
+	for _, name := range names {
+		if !toolEnabled(enabled, name) {
+			return false
+		}
+	}
+	return true
 }
 
 func studentInquiry(_ context.Context, req *mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {

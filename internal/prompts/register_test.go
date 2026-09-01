@@ -81,7 +81,9 @@ func TestRegisterAllPromptsAreDiscoverable(t *testing.T) {
 
 func TestRegisterAllFiltersPromptsByTools(t *testing.T) {
 	server := mcp.NewServer(&mcp.Implementation{Name: "test-server", Version: "1.0.0"}, nil)
-	RegisterAll(server, map[string]bool{"wiki_search": true})
+	RegisterAll(server, map[string]bool{
+		"wiki_search": true, "wiki_get_page": true, "wiki_list_tree": true, "wiki_get_backlinks": true,
+	})
 	ctx := context.Background()
 	serverTransport, clientTransport := mcp.NewInMemoryTransports()
 	serverSession, err := server.Connect(ctx, serverTransport, nil)
