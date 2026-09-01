@@ -218,9 +218,9 @@ func New(cfg Config) (*Authenticator, error) {
 			if err != nil || len(decoded) != sha256.Size {
 				continue
 			}
-		case tc.Token != "":
+		case strings.TrimSpace(tc.Token) != "":
 			// 兼容路径:对明文令牌哈希后存储;完成后丢弃明文引用。
-			hashKey = hashToken(tc.Token)
+			hashKey = hashToken(strings.TrimSpace(tc.Token))
 		default:
 			continue // 两者均未配置,跳过
 		}

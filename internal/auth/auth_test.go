@@ -101,6 +101,16 @@ func TestNewRejectsConfiguredTenantsWithoutUsableToken(t *testing.T) {
 	}
 }
 
+func TestNewRejectsConfiguredTenantsWithWhitespaceOnlyToken(t *testing.T) {
+	_, err := New(Config{
+		TenantsConfigured: true,
+		Tenants:           []TenantConfig{{Name: "broken", Token: " \t "}},
+	})
+	if err == nil {
+		t.Fatal("New accepted AUTH_TENANTS with a whitespace-only token")
+	}
+}
+
 func TestTenantUserIDIsStoredAsPrincipal(t *testing.T) {
 	a := mustAuthenticator(t, Config{Tenants: []TenantConfig{{
 		Name: "tenant-a", Token: "secret", UserID: "user-a", AllowedTools: []string{"*"},
