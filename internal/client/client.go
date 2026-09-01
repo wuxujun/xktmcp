@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -50,6 +51,9 @@ func doRequestWithRetryInner(ctx context.Context, httpClient *http.Client, req *
 	var resp *http.Response
 	var err error
 	maxAttempts := 3
+	if !retryableRequest(req) {
+		maxAttempts = 1
+	}
 	backoff := 100 * time.Millisecond
 
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
@@ -70,10 +74,14 @@ func doRequestWithRetryInner(ctx context.Context, httpClient *http.Client, req *
 			backoff *= 2
 		}
 
-		resp, err = httpClient.Do(req)
+		attemptReq, prepareErr := requestForAttempt(ctx, req)
+		if prepareErr != nil {
+			return nil, prepareErr
+		}
+		resp, err = httpClient.Do(attemptReq)
 		if err == nil {
 			// If it's a server-side transient error, retry.
-			if resp.StatusCode >= 500 && resp.StatusCode <= 599 {
+			if retryableRequest(req) && resp.StatusCode >= 500 && resp.StatusCode <= 599 {
 				logger.APIfCtx(ctx, apiName, "尝试 %d 失败，服务侧状态码: %d", attempt, resp.StatusCode)
 				resp.Body.Close()
 				err = fmt.Errorf("server error: status=%d", resp.StatusCode)
@@ -82,11 +90,58 @@ func doRequestWithRetryInner(ctx context.Context, httpClient *http.Client, req *
 			return resp, nil
 		}
 
-		// Network/timeout error, we can retry.
+		if !retryableRequest(req) {
+			return nil, fmt.Errorf("request failed after %d attempt: %w", attempt, err)
+		}
+
+		// Network/timeout error, retry only for idempotent or explicitly idempotent requests.
 		logger.APIfCtx(ctx, apiName, "尝试 %d 异常: %v", attempt, err)
 	}
 
 	return nil, fmt.Errorf("request failed after %d attempts: %w", maxAttempts, err)
+}
+
+func retryableRequest(req *http.Request) bool {
+	if req == nil {
+		return false
+	}
+	if strings.TrimSpace(req.Header.Get("Idempotency-Key")) != "" {
+		return true
+	}
+	switch req.Method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions, http.MethodTrace:
+		return true
+	default:
+		return false
+	}
+}
+
+func requestForAttempt(ctx context.Context, req *http.Request) (*http.Request, error) {
+	if req == nil {
+		return nil, errors.New("nil HTTP request")
+	}
+	attempt := req.Clone(ctx)
+	if req.Body == nil {
+		return attempt, nil
+	}
+	if req.GetBody == nil {
+		body, err := io.ReadAll(req.Body)
+		if err != nil {
+			return nil, fmt.Errorf("buffer request body for retry: %w", err)
+		}
+		_ = req.Body.Close()
+		payload := append([]byte(nil), body...)
+		req.GetBody = func() (io.ReadCloser, error) {
+			return io.NopCloser(bytes.NewReader(payload)), nil
+		}
+	}
+	body, err := req.GetBody()
+	if err != nil {
+		return nil, fmt.Errorf("replay request body: %w", err)
+	}
+	attempt.Body = body
+	attempt.GetBody = req.GetBody
+	return attempt, nil
 }
 
 // readErrorDetails reads a portion of the response body and extracts a friendly error message.

@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -119,6 +120,60 @@ func TestDoRequestWithRetry(t *testing.T) {
 		}
 		if resp.StatusCode != http.StatusOK {
 			t.Errorf("expected 200 OK, got %d", resp.StatusCode)
+		}
+	})
+
+	t.Run("do not retry POST without idempotency key", func(t *testing.T) {
+		var calls int32
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			atomic.AddInt32(&calls, 1)
+			w.WriteHeader(http.StatusInternalServerError)
+		}))
+		defer server.Close()
+
+		req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, server.URL, strings.NewReader(`{"name":"demo"}`))
+		resp, err := doRequestWithRetry(context.Background(), http.DefaultClient, req, "TestAPI", nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		defer resp.Body.Close()
+		if atomic.LoadInt32(&calls) != 1 {
+			t.Fatalf("expected 1 call without idempotency key, got %d", calls)
+		}
+		if resp.StatusCode != http.StatusInternalServerError {
+			t.Fatalf("status=%d, want 500", resp.StatusCode)
+		}
+	})
+
+	t.Run("retry POST with idempotency key and preserve body", func(t *testing.T) {
+		var calls int32
+		var bodies []string
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			val := atomic.AddInt32(&calls, 1)
+			body, _ := io.ReadAll(r.Body)
+			bodies = append(bodies, string(body))
+			if val < 3 {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer server.Close()
+
+		req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, server.URL, strings.NewReader(`{"name":"demo"}`))
+		req.Header.Set("Idempotency-Key", "request-123")
+		resp, err := doRequestWithRetry(context.Background(), http.DefaultClient, req, "TestAPI", nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		defer resp.Body.Close()
+		if atomic.LoadInt32(&calls) != 3 {
+			t.Fatalf("expected 3 calls with idempotency key, got %d", calls)
+		}
+		for i, body := range bodies {
+			if body != `{"name":"demo"}` {
+				t.Errorf("attempt %d body=%q, want original body", i+1, body)
+			}
 		}
 	})
 
