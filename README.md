@@ -24,6 +24,29 @@ LOG_HTTP_PAYLOADS=true LOG_HTTP_PAYLOAD_MAX_BYTES=1048576 go run ./cmd/server/ma
 - 开启后使用 `category=http`、`direction=request|response`、`request_body`、`response_body` 等结构化字段。生产环境仅应在受控排障期间开启。
 - 请求元信息日志始终包含安全化的 `request_headers`，并单独提供 `mcp_protocol_version`、`mcp_session_id`、`mcp_method`；认证、Cookie 和 API Key 类 Header 仅记录为 `[REDACTED]`。
 
+### 认证配置
+
+通过 `AUTH_TENANTS` 配置多租户 Bearer Token。推荐保存 Token 的 SHA-256 十六进制摘要，而不是明文 Token：
+
+```json
+[
+  {
+    "name": "wiki-user-a",
+    "token_hash": "<64-character-sha256-hex>",
+    "user_id": "user-a",
+    "allowed_tools": ["wiki_search", "wiki_get_page"],
+    "rate_rps": 5,
+    "rate_burst": 10
+  }
+]
+```
+
+`user_id` 是可选的租户可信主体；配置后，它会成为该租户经过认证的用户身份。远程 Token 验证响应中的 `userid` 同样是可信主体。存在可信主体时，请求中的 `userId` 必须与之匹配（缺失时会注入可信主体）；冲突会返回 HTTP 403。
+
+共享 `AUTH_TOKEN`、IP 白名单和 stdio 模式中的 `userId` 仅是路由元数据，并不代表经过认证的用户身份。不要把这类 `userId` 用作授权或安全边界。
+
+HTTP MCP POST 请求体最大为 4 MiB；超过该限制会返回 HTTP 413。远程 Token 验证缓存通过 `AUTH_REMOTE_CACHE_MAX_ENTRIES` 配置，默认最多 4096 条；该值必须为正整数。
+
 Streamable HTTP 会按 MCP 协议版本选择传输方式：`2025-11-25` 及更早版本使用有状态会话并返回 `application/json`，`2026-07-28` 使用无会话模式并返回 `text/event-stream`。客户端请求仍需声明 `Accept: application/json, text/event-stream`；legacy 客户端应通过 `initialize` 协商版本，并在后续请求携带响应中的 `Mcp-Session-Id` 和 `Mcp-Protocol-Version`。
 
 ```bash
