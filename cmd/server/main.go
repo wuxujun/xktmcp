@@ -92,17 +92,16 @@ func main() {
 	if localToken == "" {
 		localToken = strings.TrimSpace(os.Getenv("AUTH_TOKEN"))
 	}
-	authenticator, err := auth.New(buildAuthConfig(localToken))
+	authCfg, err := buildAuthConfig(localToken)
 	if err != nil {
 		logger.Errorf("认证配置非法: %v", err)
 		os.Exit(1)
 	}
-
-	// 将 MCPMiddleware 注册到 MCP Server：
-	// MCP SDK 会 detach HTTP request context，所以在 HTTP 中间件注入的 userID
-	// 在 tool handler 里取不到。MCPMiddleware 在 MCP 消息层重新补注，
-	// 使 trace.EffectiveUserID(ctx, args.UserID) 能透明取到远程验证返回的 userID。
-	s.AddReceivingMiddleware(authenticator.MCPMiddleware())
+	authenticator, err := auth.New(authCfg)
+	if err != nil {
+		logger.Errorf("认证器初始化失败: %v", err)
+		os.Exit(1)
+	}
 
 	switch *transport {
 	case "stdio":
@@ -235,7 +234,7 @@ func isLegacyProtocolVersion(version string) bool {
 // IP 白名单(AUTH_IP_ALLOWLIST,逗号分隔 CIDR)默认【关闭】;配置后,
 // 命中网段的请求直接放行、无需 Bearer 令牌。来源 IP 默认取 TCP 连接的 RemoteAddr,
 // 仅当 AUTH_TRUST_FORWARDED_HEADER=true(部署在可信代理之后)时才信任 X-Forwarded-For。
-func buildAuthConfig(localToken string) auth.Config {
+func buildAuthConfig(localToken string) (auth.Config, error) {
 	var allowed []string
 	if raw := strings.TrimSpace(os.Getenv("AUTH_REMOTE_ALLOWED_HOSTS")); raw != "" {
 		for _, h := range strings.Split(raw, ",") {
@@ -250,29 +249,34 @@ func buildAuthConfig(localToken string) auth.Config {
 	if raw := strings.TrimSpace(os.Getenv("AUTH_IP_ALLOWLIST")); raw != "" {
 		parsed, err := auth.ParseCIDRs(strings.Split(raw, ","))
 		if err != nil {
-			logger.Errorf("[Auth] AUTH_IP_ALLOWLIST 配置非法,拒绝启动: %v", err)
-			os.Exit(1)
+			return auth.Config{}, fmt.Errorf("parse AUTH_IP_ALLOWLIST: %w", err)
 		}
 		cidrs = parsed
 	}
 
 	// 解析多租户配置
 	var tenants []auth.TenantConfig
-	if raw := strings.TrimSpace(os.Getenv("AUTH_TENANTS")); raw != "" {
-		if err := json.Unmarshal([]byte(raw), &tenants); err != nil {
-			logger.Errorf("[Auth] 解析 AUTH_TENANTS 环境变量失败: %v", err)
-			os.Exit(1)
+	tenantConfig := strings.TrimSpace(os.Getenv("AUTH_TENANTS"))
+	if tenantConfig != "" {
+		if err := json.Unmarshal([]byte(tenantConfig), &tenants); err != nil {
+			return auth.Config{}, fmt.Errorf("parse AUTH_TENANTS: %w", err)
 		}
+	}
+	remoteCacheMaxEntries, err := envPositiveInt("AUTH_REMOTE_CACHE_MAX_ENTRIES", 4096)
+	if err != nil {
+		return auth.Config{}, err
 	}
 
 	return auth.Config{
-		LocalToken:           localToken,
-		Tenants:              tenants,
-		RemoteVerifyURL:      strings.TrimSpace(os.Getenv("AUTH_REMOTE_VERIFY_URL")),
-		AllowedHosts:         allowed,
-		AllowedCIDRs:         cidrs,
-		TrustForwardedHeader: envBool("AUTH_TRUST_FORWARDED_HEADER"),
-	}
+		LocalToken:            localToken,
+		Tenants:               tenants,
+		TenantsConfigured:     tenantConfig != "",
+		RemoteVerifyURL:       strings.TrimSpace(os.Getenv("AUTH_REMOTE_VERIFY_URL")),
+		AllowedHosts:          allowed,
+		AllowedCIDRs:          cidrs,
+		TrustForwardedHeader:  envBool("AUTH_TRUST_FORWARDED_HEADER"),
+		RemoteCacheMaxEntries: remoteCacheMaxEntries,
+	}, nil
 }
 
 // envBool 解析布尔型环境变量,接受 1/true/yes/on(忽略大小写)为真,其余为假。
@@ -283,6 +287,18 @@ func envBool(key string) bool {
 	default:
 		return false
 	}
+}
+
+func envPositiveInt(key string, fallback int) (int, error) {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback, nil
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value <= 0 {
+		return 0, fmt.Errorf("%s must be a positive integer", key)
+	}
+	return value, nil
 }
 
 func envInt64(key string, fallback int64) int64 {

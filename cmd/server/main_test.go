@@ -21,6 +21,33 @@ const (
 	protocolVersion20260728 = "2026-07-28"
 )
 
+func TestBuildAuthConfigParsesRemoteCacheCapacity(t *testing.T) {
+	t.Setenv("AUTH_REMOTE_CACHE_MAX_ENTRIES", "123")
+	cfg, err := buildAuthConfig("token")
+	if err != nil || cfg.RemoteCacheMaxEntries != 123 {
+		t.Fatalf("capacity=%d err=%v, want 123 nil", cfg.RemoteCacheMaxEntries, err)
+	}
+}
+
+func TestBuildAuthConfigRejectsNonPositiveRemoteCacheCapacity(t *testing.T) {
+	for _, value := range []string{"0", "-1", "not-a-number"} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv("AUTH_REMOTE_CACHE_MAX_ENTRIES", value)
+			if _, err := buildAuthConfig("token"); err == nil {
+				t.Fatalf("buildAuthConfig accepted %q", value)
+			}
+		})
+	}
+}
+
+func TestBuildAuthConfigMarksTenantsConfigured(t *testing.T) {
+	t.Setenv("AUTH_TENANTS", `[]`)
+	cfg, err := buildAuthConfig("token")
+	if err != nil || !cfg.TenantsConfigured {
+		t.Fatalf("TenantsConfigured=%t err=%v, want true nil", cfg.TenantsConfigured, err)
+	}
+}
+
 func TestUserIDMiddlewareInjectsQueryUserID(t *testing.T) {
 	var got string
 	handler := userIDMiddleware(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {

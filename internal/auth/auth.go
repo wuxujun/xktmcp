@@ -23,7 +23,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/wuxujun/xktmcp/internal/logger"
 	"github.com/wuxujun/xktmcp/internal/trace"
 )
@@ -154,11 +153,6 @@ type Authenticator struct {
 
 	cache *verificationCache // 缓存校验结果 (key: sha256_hash_string)
 
-	// sessionUserID 把 MCP sessionID 映射到远程验证返回的 userID。
-	// MCP SDK 会 detach HTTP request context，HTTP 中间件注入的 context value
-	// 无法传递到 tool handler；通过此 map + MCPMiddleware 在 MCP 消息层面补注。
-	sessionUserID sync.Map // key: sessionID(string) → value: userID(string)
-
 	tenantsByToken map[string]*Tenant
 }
 
@@ -270,9 +264,6 @@ func hostAllowed(rawURL string, allowed []string) bool {
 }
 
 // Middleware 返回包裹 next 的认证中间件。
-// 认证通过且携带 userID 时，同时把 sessionID→userID 存入内部 map，
-// 供 MCPMiddleware 在 MCP 消息层面补注（SDK 会 detach HTTP context，
-// 直接在 HTTP 层注入的 context value 无法到达 tool handler）。
 func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, ok := a.readRequestBody(w, r)
@@ -336,12 +327,6 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 				if userID != "" {
 					ctx = context.WithValue(ctx, ctxKeyUserID, userID)
 					ctx = trace.WithAuthenticatedUserID(ctx, userID)
-					// 把 sessionID→userID 存入 map，供 MCPMiddleware 在 MCP 消息层补注。
-					// MCP-Session-Id 头由 SDK 在 /mcp 的响应里下发，首次 POST
-					// 时客户端会回传该头，从而可在此取到。
-					if sid := r.Header.Get("Mcp-Session-Id"); sid != "" {
-						a.sessionUserID.Store(sid, userID)
-					}
 				}
 				a.serveAuthenticated(w, r.WithContext(ctx), next, body, authenticationDecision{
 					mode:      "remote",
@@ -353,35 +338,6 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 
 		a.deny(w, r, ip, "令牌无效")
 	})
-}
-
-// MCPMiddleware 返回一个 mcp.MiddlewareFunc，在 MCP 消息层面把 userID 注入 context。
-// 必须与 Middleware 配合使用，通过 server.AddReceivingMiddleware 注册到 mcp.Server。
-//
-// 背景：MCP SDK (go-sdk) 在建立 Streamable HTTP / SSE 长连接时会 detach HTTP 请求
-// 的 context（见 streamable.go 注释），导致 HTTP 中间件注入的 context value 在
-// tool handler 里丢失。本方法在 SDK 的 MCP 消息层面重新补注，确保
-// trace.EffectiveUserID(ctx, ...) 能透明取到远程验证返回的 userID。
-func (a *Authenticator) MCPMiddleware() func(next mcp.MethodHandler) mcp.MethodHandler {
-	return func(next mcp.MethodHandler) mcp.MethodHandler {
-		return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
-			// 优先级：ctx 中已有值（URL ?userId= 注入）> session map 中的 userID（远程验证注入）
-			if trace.UserIDFromContext(ctx) == "" {
-				if sid := req.GetSession().ID(); sid != "" {
-					if v, ok := a.sessionUserID.Load(sid); ok {
-						ctx = trace.WithUserID(ctx, v.(string))
-					}
-				}
-			}
-			return next(ctx, method, req)
-		}
-	}
-}
-
-// CleanSession 清理 session 关闭后残留的 sessionID→userID 映射，防止内存泄漏。
-// 在 mcp.ServerOptions.OnSessionClose（或等效回调）中调用。
-func (a *Authenticator) CleanSession(sessionID string) {
-	a.sessionUserID.Delete(sessionID)
 }
 
 // ClientIP 尽力解析请求来源 IP:优先 X-Forwarded-For(取最初客户端)、X-Real-IP,
