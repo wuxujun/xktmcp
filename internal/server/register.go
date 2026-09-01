@@ -31,31 +31,6 @@ type auditable interface {
 func RegisterAll(s *mcp.Server, wikiConfigPaths ...string) error {
 	prompts.RegisterAll(s)
 
-	baseCfg, err := client.LoadConfigFromEnv()
-	if err != nil {
-		return err
-	}
-
-	studentAPI := client.NewStudentAPI(baseCfg)
-	studentSvc := service.NewStudentService(studentAPI)
-
-	addTool(s, tools.StudentSearchTool(), tools.StudentSearchHandler(studentSvc))
-	addTool(s, tools.StudentOrderTool(), tools.StudentOrderHandler(studentSvc))
-	addTool(s, tools.StudentExamTool(), tools.StudentExamHandler(studentSvc))
-	addTool(s, tools.StudentGetTool(), tools.StudentGetHandler(studentSvc))
-
-	//Rag搜索
-	ragAPI := client.NewRagAPI(baseCfg)
-	ragSvc := service.NewRagService(ragAPI)
-	addTool(s, tools.RagSearchTool(), tools.RagSearchHandler(ragSvc))
-
-	//Staff搜索
-	staffAPI := client.NewStaffAPI(baseCfg)
-	staffSvc := service.NewStaffService(staffAPI)
-	addTool(s, tools.StaffSearchTool(), tools.StaffSearchHandler(staffSvc))
-
-	//Wiki 知识库
-	wikiAPI := client.NewWikiAPI(baseCfg)
 	wikiConfigPath := "config/wiki.json"
 	if len(wikiConfigPaths) > 0 && wikiConfigPaths[0] != "" {
 		wikiConfigPath = wikiConfigPaths[0]
@@ -64,10 +39,40 @@ func RegisterAll(s *mcp.Server, wikiConfigPaths ...string) error {
 	if err != nil {
 		return err
 	}
+
+	// 本地 Wiki 是独立部署模式，不应要求上游 API 配置，也不注册依赖上游的工具。
+	if wikiConfig.Mode == wikibackend.ModeLocal {
+		return registerWikiTools(s, client.Config{}, wikiConfig)
+	}
+
+	baseCfg, err := client.LoadConfigFromEnv()
+	if err != nil {
+		return err
+	}
+
+	studentAPI := client.NewStudentAPI(baseCfg)
+	studentSvc := service.NewStudentService(studentAPI)
+	addTool(s, tools.StudentSearchTool(), tools.StudentSearchHandler(studentSvc))
+	addTool(s, tools.StudentOrderTool(), tools.StudentOrderHandler(studentSvc))
+	addTool(s, tools.StudentExamTool(), tools.StudentExamHandler(studentSvc))
+	addTool(s, tools.StudentGetTool(), tools.StudentGetHandler(studentSvc))
+
+	ragAPI := client.NewRagAPI(baseCfg)
+	ragSvc := service.NewRagService(ragAPI)
+	addTool(s, tools.RagSearchTool(), tools.RagSearchHandler(ragSvc))
+
+	staffAPI := client.NewStaffAPI(baseCfg)
+	staffSvc := service.NewStaffService(staffAPI)
+	addTool(s, tools.StaffSearchTool(), tools.StaffSearchHandler(staffSvc))
+
+	return registerWikiTools(s, baseCfg, wikiConfig)
+}
+
+func registerWikiTools(s *mcp.Server, baseCfg client.Config, wikiConfig wikibackend.Config) error {
+	wikiAPI := client.NewWikiAPI(baseCfg)
 	var wikiBackend service.WikiBackend = wikiAPI
 	if wikiConfig.Mode == wikibackend.ModeLocal {
-		localSearcher, localErr := wikibackend.NewLocalRouter(wikiConfig.Local)
-		err = localErr
+		localSearcher, err := wikibackend.NewLocalRouter(wikiConfig.Local)
 		if err != nil {
 			return err
 		}
