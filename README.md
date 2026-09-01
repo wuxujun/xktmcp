@@ -1,6 +1,6 @@
 ## xktmcp
 
-基于MCP协议的学生相关数据接口服务。
+基于 MCP 协议的学生、教职工、RAG 与 Wiki 数据服务，支持 stdio、SSE 和 Streamable HTTP。
 
 ### 运行
 
@@ -8,8 +8,8 @@
 # 运行
 go run ./cmd/server/main.go -transport=http -port=8081
 
-# 查看日志
-go run ./cmd/server/main.go -transport=http -port=8081 -debug
+# 开启受控 HTTP 请求/响应内容日志（默认关闭）
+go run ./cmd/server/main.go -transport=http -port=8081 -log-http-payloads
 ```
 
 请求与响应内容日志默认关闭，避免把敏感业务数据直接写入日志。可通过环境变量开启：
@@ -48,6 +48,8 @@ LOG_HTTP_PAYLOADS=true LOG_HTTP_PAYLOAD_MAX_BYTES=1048576 go run ./cmd/server/ma
 HTTP MCP POST 请求体最大为 4 MiB；超过该限制会返回 HTTP 413。远程 Token 验证缓存通过 `AUTH_REMOTE_CACHE_MAX_ENTRIES` 配置，默认最多 4096 条；该值必须为正整数。
 
 ### Authentication configuration (English)
+
+`xktmcp` provides student, staff, RAG, and Wiki MCP tools over stdio, SSE, and Streamable HTTP. The `-debug` flag is not supported; use `-log-http-payloads` or the equivalent environment variables for controlled payload diagnostics.
 
 Configure tenant-specific Bearer tokens with `AUTH_TENANTS`. Prefer storing a SHA-256 hexadecimal token digest rather than a plaintext token:
 

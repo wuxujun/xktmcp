@@ -39,3 +39,4 @@ cmd/**
 !cmd/**/*.go
 
 *.log
+*.log.gz
