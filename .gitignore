@@ -12,6 +12,7 @@
 .project
 .settings/
 .classpath
+.worktrees/
 .env
 /config/wiki.json
 
