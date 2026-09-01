@@ -6,11 +6,15 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"strings"
 )
 
 type ctxKey struct{}
 type userIDKey struct{}
+type authenticatedUserIDKey struct{}
+
+var ErrUserIDConflict = errors.New("authenticated userId conflicts with requested userId")
 
 // NewID 生成 16 位十六进制(8 字节)随机 trace id。
 // crypto/rand 极少失败,失败时退回全零 id(仍可用于串联,只是不唯一)。
@@ -69,9 +73,39 @@ func UserIDFromContext(ctx context.Context) string {
 	return ""
 }
 
-// EffectiveUserID resolves the caller user id with a single precedence rule:
-// explicit tool argument first, then the HTTP context value.
+func WithAuthenticatedUserID(ctx context.Context, uid string) context.Context {
+	return context.WithValue(ctx, authenticatedUserIDKey{}, strings.TrimSpace(uid))
+}
+
+func AuthenticatedUserIDFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	uid, _ := ctx.Value(authenticatedUserIDKey{}).(string)
+	return strings.TrimSpace(uid)
+}
+
+func ResolveUserID(ctx context.Context, explicit string) (string, error) {
+	principal := AuthenticatedUserIDFromContext(ctx)
+	explicit = strings.TrimSpace(explicit)
+	routed := strings.TrimSpace(UserIDFromContext(ctx))
+	if principal != "" {
+		if (explicit != "" && explicit != principal) || (routed != "" && routed != principal) {
+			return "", ErrUserIDConflict
+		}
+		return principal, nil
+	}
+	if explicit != "" {
+		return explicit, nil
+	}
+	return routed, nil
+}
+
+// EffectiveUserID resolves the caller user id, preferring the trusted principal.
 func EffectiveUserID(ctx context.Context, explicit string) string {
+	if principal := AuthenticatedUserIDFromContext(ctx); principal != "" {
+		return principal
+	}
 	if uid := strings.TrimSpace(explicit); uid != "" {
 		return uid
 	}

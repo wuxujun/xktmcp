@@ -2,6 +2,7 @@ package trace
 
 import (
 	"context"
+	"errors"
 	"testing"
 )
 
@@ -58,16 +59,28 @@ func TestEnsureIDPrecedence(t *testing.T) {
 	}
 }
 
-func TestEffectiveUserIDPrecedence(t *testing.T) {
-	ctx := WithUserID(context.Background(), "ctx-user")
+func TestResolveUserID(t *testing.T) {
+	trusted := WithAuthenticatedUserID(WithUserID(context.Background(), "trusted-user"), "trusted-user")
+	got, err := ResolveUserID(trusted, " trusted-user ")
+	if err != nil || got != "trusted-user" {
+		t.Fatalf("ResolveUserID() = %q, %v; want trusted-user, nil", got, err)
+	}
 
-	if got := EffectiveUserID(ctx, " arg-user "); got != "arg-user" {
-		t.Errorf("应优先使用工具入参 userId 并裁剪空白,得到 %q", got)
+	conflict := WithAuthenticatedUserID(WithUserID(context.Background(), "url-user"), "trusted-user")
+	if _, err := ResolveUserID(conflict, ""); !errors.Is(err, ErrUserIDConflict) {
+		t.Fatalf("ResolveUserID conflict error = %v, want ErrUserIDConflict", err)
 	}
-	if got := EffectiveUserID(ctx, " "); got != "ctx-user" {
-		t.Errorf("入参为空时应回退到 context userId,得到 %q", got)
+
+	fallback := WithUserID(context.Background(), "url-user")
+	got, err = ResolveUserID(fallback, " argument-user ")
+	if err != nil || got != "argument-user" {
+		t.Fatalf("ResolveUserID fallback = %q, %v; want argument-user, nil", got, err)
 	}
-	if got := EffectiveUserID(context.Background(), " "); got != "" {
-		t.Errorf("无入参且 context 无 userId 时应返回空串,得到 %q", got)
+}
+
+func TestEffectiveUserIDPrefersAuthenticatedPrincipal(t *testing.T) {
+	ctx := WithAuthenticatedUserID(WithUserID(context.Background(), "url-user"), "trusted-user")
+	if got := EffectiveUserID(ctx, "argument-user"); got != "trusted-user" {
+		t.Fatalf("EffectiveUserID() = %q, want trusted-user", got)
 	}
 }
