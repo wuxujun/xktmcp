@@ -11,6 +11,20 @@ import (
 	"github.com/wuxujun/xktmcp/internal/trace"
 )
 
+func TestParseEnabledTools(t *testing.T) {
+	all, err := parseEnabledTools("")
+	if err != nil || all != nil {
+		t.Fatalf("empty config = %#v err=%v, want nil set", all, err)
+	}
+	set, err := parseEnabledTools(" wiki_search,rag_search,wiki_search ")
+	if err != nil || len(set) != 2 || !set["wiki_search"] || !set["rag_search"] {
+		t.Fatalf("parsed tools = %#v err=%v", set, err)
+	}
+	if _, err := parseEnabledTools("unknown_tool"); err == nil {
+		t.Fatal("unknown tool was accepted")
+	}
+}
+
 type testAuditArgs struct {
 	UserID string
 }

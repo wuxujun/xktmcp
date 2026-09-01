@@ -2,6 +2,9 @@ package server
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -30,6 +33,10 @@ type auditable interface {
 // RegisterAll 装配依赖并注册所有 MCP 工具(均带统一埋点:trace id + 指标 + 摘要日志)。
 func RegisterAll(s *mcp.Server, wikiConfigPaths ...string) error {
 	prompts.RegisterAll(s)
+	enabledTools, err := parseEnabledTools(os.Getenv("MCP_ENABLED_TOOLS"))
+	if err != nil {
+		return err
+	}
 
 	wikiConfigPath := "config/wiki.json"
 	if len(wikiConfigPaths) > 0 && wikiConfigPaths[0] != "" {
@@ -42,7 +49,7 @@ func RegisterAll(s *mcp.Server, wikiConfigPaths ...string) error {
 
 	// 本地 Wiki 是独立部署模式，不应要求上游 API 配置，也不注册依赖上游的工具。
 	if wikiConfig.Mode == wikibackend.ModeLocal {
-		return registerWikiTools(s, client.Config{}, wikiConfig)
+		return registerWikiTools(s, client.Config{}, wikiConfig, enabledTools)
 	}
 
 	baseCfg, err := client.LoadConfigFromEnv()
@@ -52,23 +59,35 @@ func RegisterAll(s *mcp.Server, wikiConfigPaths ...string) error {
 
 	studentAPI := client.NewStudentAPI(baseCfg)
 	studentSvc := service.NewStudentService(studentAPI)
-	addTool(s, tools.StudentSearchTool(), tools.StudentSearchHandler(studentSvc))
-	addTool(s, tools.StudentOrderTool(), tools.StudentOrderHandler(studentSvc))
-	addTool(s, tools.StudentExamTool(), tools.StudentExamHandler(studentSvc))
-	addTool(s, tools.StudentGetTool(), tools.StudentGetHandler(studentSvc))
+	if toolEnabled(enabledTools, "student_search") {
+		addTool(s, tools.StudentSearchTool(), tools.StudentSearchHandler(studentSvc))
+	}
+	if toolEnabled(enabledTools, "student_order") {
+		addTool(s, tools.StudentOrderTool(), tools.StudentOrderHandler(studentSvc))
+	}
+	if toolEnabled(enabledTools, "student_exam") {
+		addTool(s, tools.StudentExamTool(), tools.StudentExamHandler(studentSvc))
+	}
+	if toolEnabled(enabledTools, "student_get") {
+		addTool(s, tools.StudentGetTool(), tools.StudentGetHandler(studentSvc))
+	}
 
 	ragAPI := client.NewRagAPI(baseCfg)
 	ragSvc := service.NewRagService(ragAPI)
-	addTool(s, tools.RagSearchTool(), tools.RagSearchHandler(ragSvc))
+	if toolEnabled(enabledTools, "rag_search") {
+		addTool(s, tools.RagSearchTool(), tools.RagSearchHandler(ragSvc))
+	}
 
 	staffAPI := client.NewStaffAPI(baseCfg)
 	staffSvc := service.NewStaffService(staffAPI)
-	addTool(s, tools.StaffSearchTool(), tools.StaffSearchHandler(staffSvc))
+	if toolEnabled(enabledTools, "staff_search") {
+		addTool(s, tools.StaffSearchTool(), tools.StaffSearchHandler(staffSvc))
+	}
 
-	return registerWikiTools(s, baseCfg, wikiConfig)
+	return registerWikiTools(s, baseCfg, wikiConfig, enabledTools)
 }
 
-func registerWikiTools(s *mcp.Server, baseCfg client.Config, wikiConfig wikibackend.Config) error {
+func registerWikiTools(s *mcp.Server, baseCfg client.Config, wikiConfig wikibackend.Config, enabledTools map[string]bool) error {
 	wikiAPI := client.NewWikiAPI(baseCfg)
 	var wikiBackend service.WikiBackend = wikiAPI
 	if wikiConfig.Mode == wikibackend.ModeLocal {
@@ -84,13 +103,55 @@ func registerWikiTools(s *mcp.Server, baseCfg client.Config, wikiConfig wikiback
 		logger.Infof("Wiki 后端: http base_url=%s", baseCfg.BaseURL)
 	}
 	wikiSvc := service.NewWikiService(wikiAPI, wikiBackend)
-	addTool(s, tools.WikiSearchTool(), tools.WikiSearchHandler(wikiSvc))
-	addTool(s, tools.WikiGetPageTool(), tools.WikiGetPageHandler(wikiSvc))
-	addTool(s, tools.WikiListTreeTool(), tools.WikiListTreeHandler(wikiSvc))
-	addTool(s, tools.WikiUpsertPageTool(), tools.WikiUpsertPageHandler(wikiSvc))
-	addTool(s, tools.WikiGetBacklinksTool(), tools.WikiGetBacklinksHandler(wikiSvc))
+	if toolEnabled(enabledTools, "wiki_search") {
+		addTool(s, tools.WikiSearchTool(), tools.WikiSearchHandler(wikiSvc))
+	}
+	if toolEnabled(enabledTools, "wiki_get_page") {
+		addTool(s, tools.WikiGetPageTool(), tools.WikiGetPageHandler(wikiSvc))
+	}
+	if toolEnabled(enabledTools, "wiki_list_tree") {
+		addTool(s, tools.WikiListTreeTool(), tools.WikiListTreeHandler(wikiSvc))
+	}
+	if toolEnabled(enabledTools, "wiki_upsert_page") {
+		addTool(s, tools.WikiUpsertPageTool(), tools.WikiUpsertPageHandler(wikiSvc))
+	}
+	if toolEnabled(enabledTools, "wiki_get_backlinks") {
+		addTool(s, tools.WikiGetBacklinksTool(), tools.WikiGetBacklinksHandler(wikiSvc))
+	}
 
 	return nil
+}
+
+var knownToolNames = map[string]struct{}{
+	"student_search": {}, "student_order": {}, "student_exam": {}, "student_get": {},
+	"rag_search": {}, "staff_search": {}, "wiki_search": {}, "wiki_get_page": {},
+	"wiki_list_tree": {}, "wiki_upsert_page": {}, "wiki_get_backlinks": {},
+}
+
+func parseEnabledTools(raw string) (map[string]bool, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	set := make(map[string]bool)
+	for _, item := range strings.Split(raw, ",") {
+		name := strings.TrimSpace(item)
+		if name == "" {
+			continue
+		}
+		if _, ok := knownToolNames[name]; !ok {
+			return nil, fmt.Errorf("unknown MCP tool %q in MCP_ENABLED_TOOLS", name)
+		}
+		set[name] = true
+	}
+	if len(set) == 0 {
+		return nil, fmt.Errorf("MCP_ENABLED_TOOLS must contain at least one known tool")
+	}
+	return set, nil
+}
+
+func toolEnabled(enabled map[string]bool, name string) bool {
+	return enabled == nil || enabled[name]
 }
 
 type toolHandler[In any] func(

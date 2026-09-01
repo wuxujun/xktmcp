@@ -47,6 +47,8 @@ LOG_HTTP_PAYLOADS=true LOG_HTTP_PAYLOAD_MAX_BYTES=1048576 go run ./cmd/server/ma
 
 HTTP MCP POST 请求体最大为 4 MiB；超过该限制会返回 HTTP 413。远程 Token 验证缓存通过 `AUTH_REMOTE_CACHE_MAX_ENTRIES` 配置，默认最多 4096 条；该值必须为正整数。
 
+可通过 `MCP_ENABLED_TOOLS` 使用逗号分隔的工具白名单限制注册范围；未设置时注册全部工具，未知工具名会导致启动失败。
+
 ### Authentication configuration (English)
 
 `xktmcp` provides student, staff, RAG, and Wiki MCP tools over stdio, SSE, and Streamable HTTP. The `-debug` flag is not supported; use `-log-http-payloads` or the equivalent environment variables for controlled payload diagnostics.
@@ -71,6 +73,8 @@ The optional tenant `user_id` is a trusted authenticated principal. A `userid` r
 The `userId` used with a shared `AUTH_TOKEN`, IP allowlist, or stdio transport is routing metadata only, not an authenticated user identity. Do not use it for authorization or as a security boundary.
 
 HTTP MCP POST bodies are limited to 4 MiB; larger bodies receive HTTP 413. Configure the remote-token verification cache with `AUTH_REMOTE_CACHE_MAX_ENTRIES`; it defaults to 4096 entries and must be a positive integer.
+
+Use `MCP_ENABLED_TOOLS` with a comma-separated allowlist to limit which MCP tools are registered. When unset, all tools are registered; an unknown tool name fails startup.
 
 Streamable HTTP 会按 MCP 协议版本选择传输方式：`2025-11-25` 及更早版本使用有状态会话并返回 `application/json`，`2026-07-28` 使用无会话模式并返回 `text/event-stream`。客户端请求仍需声明 `Accept: application/json, text/event-stream`；legacy 客户端应通过 `initialize` 协商版本，并在后续请求携带响应中的 `Mcp-Session-Id` 和 `Mcp-Protocol-Version`。
 
