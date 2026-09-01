@@ -24,21 +24,10 @@ type ragSearchResponse struct {
 }
 
 func NewRagAPI(cfg Config) *RagAPI {
-	var transport *http.Transport
-	if defaultTr, ok := http.DefaultTransport.(*http.Transport); ok {
-		transport = defaultTr.Clone()
-	} else {
-		transport = &http.Transport{}
-	}
-	transport.Proxy = nil
-
 	return &RagAPI{
 		baseURL:  cfg.BaseURL,
 		apiToken: cfg.APIToken,
-		client: &http.Client{
-			Transport: transport,
-			Timeout:   cfg.Timeout,
-		},
+		client:   newAPIHTTPClient(cfg.Timeout),
 		breaker:  ragBreaker,
 	}
 }

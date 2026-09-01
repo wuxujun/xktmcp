@@ -24,21 +24,10 @@ type staffSearchResponse struct {
 }
 
 func NewStaffAPI(cfg Config) *StaffAPI {
-	var transport *http.Transport
-	if defaultTr, ok := http.DefaultTransport.(*http.Transport); ok {
-		transport = defaultTr.Clone()
-	} else {
-		transport = &http.Transport{}
-	}
-	transport.Proxy = nil
-
 	return &StaffAPI{
 		baseURL:  cfg.BaseURL,
 		apiToken: cfg.APIToken,
-		client: &http.Client{
-			Transport: transport,
-			Timeout:   cfg.Timeout,
-		},
+		client:   newAPIHTTPClient(cfg.Timeout),
 		breaker:  staffBreaker,
 	}
 }

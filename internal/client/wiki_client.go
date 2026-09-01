@@ -42,22 +42,11 @@ type wikiBacklinksResponse struct {
 }
 
 func NewWikiAPI(cfg Config) *WikiAPI {
-	var transport *http.Transport
-	if defaultTr, ok := http.DefaultTransport.(*http.Transport); ok {
-		transport = defaultTr.Clone()
-	} else {
-		transport = &http.Transport{}
-	}
-	transport.Proxy = nil
-
 	return &WikiAPI{
 		baseURL:  cfg.BaseURL,
 		apiToken: cfg.APIToken,
-		client: &http.Client{
-			Transport: transport,
-			Timeout:   cfg.Timeout,
-		},
-		breaker: wikiBreaker,
+		client:   newAPIHTTPClient(cfg.Timeout),
+		breaker:  wikiBreaker,
 	}
 }
 

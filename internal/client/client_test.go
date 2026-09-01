@@ -95,6 +95,17 @@ func TestReadErrorDetails(t *testing.T) {
 	}
 }
 
+func TestNewAPIHTTPClientPreservesSystemProxy(t *testing.T) {
+	httpClient := newAPIHTTPClient(0)
+	transport, ok := httpClient.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("transport type = %T, want *http.Transport", httpClient.Transport)
+	}
+	if transport.Proxy == nil {
+		t.Fatal("API client disabled the system proxy")
+	}
+}
+
 func TestDoRequestWithRetry(t *testing.T) {
 	t.Run("drains transient response before close", func(t *testing.T) {
 		first := &trackingBody{data: []byte("transient response")}

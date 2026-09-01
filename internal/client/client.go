@@ -14,6 +14,16 @@ import (
 	"github.com/wuxujun/xktmcp/internal/logger"
 )
 
+func newAPIHTTPClient(timeout time.Duration) *http.Client {
+	var transport *http.Transport
+	if defaultTr, ok := http.DefaultTransport.(*http.Transport); ok {
+		transport = defaultTr.Clone()
+	} else {
+		transport = &http.Transport{}
+	}
+	return &http.Client{Transport: transport, Timeout: timeout}
+}
+
 func doRequestWithRetry(ctx context.Context, httpClient *http.Client, req *http.Request, apiName string, cb *CircuitBreaker) (*http.Response, error) {
 	if cb == nil {
 		cb = upstreamBreaker
