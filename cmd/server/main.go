@@ -26,6 +26,16 @@ import (
 	"gopkg.in/natefinch/lumberjack.v2"
 )
 
+// version is replaced by release builds via -ldflags "-X main.version=...".
+var version = "1.0.1"
+
+func implementationVersion() string {
+	if v := strings.TrimSpace(version); v != "" {
+		return v
+	}
+	return "dev"
+}
+
 func main() {
 	_ = godotenv.Load()
 	// 命令行参数(认证令牌不再有硬编码默认值,改由 env AUTH_TOKEN 提供,避免默认弱口令)。
@@ -75,7 +85,7 @@ func main() {
 
 	s := mcp.NewServer(&mcp.Implementation{
 		Name:    "xkt-mcp-server",
-		Version: "1.0.1",
+		Version: implementationVersion(),
 	}, &mcp.ServerOptions{
 		// 启用心跳功能，每 30 秒发送一次 ping
 		KeepAlive: 30 * time.Second,
