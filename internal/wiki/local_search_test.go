@@ -108,3 +108,59 @@ func TestLocalSearcherSplitsMixedLatinAndChineseQuery(t *testing.T) {
 		t.Fatalf("results = %+v, want mixed-language query to match PBL article", results)
 	}
 }
+
+func TestLocalSearcherRefreshReplacesChangedAndDeletedBacklinks(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "wiki")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write := func(name, content string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("target-a.md", "---\npage_id: target-a\ntitle: Target A\n---\n")
+	write("target-b.md", "---\npage_id: target-b\ntitle: Target B\n---\n")
+	write("source.md", "---\npage_id: source\ntitle: Source\n---\nSee [target A](target-a.md).\n")
+
+	searcher, err := NewLocalSearcher(LocalConfig{Root: root, ContentDirs: []string{"wiki"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	links, err := searcher.GetBacklinks(context.Background(), "", "target-a")
+	if err != nil || len(links) != 1 || links[0].SourcePageID != "source" {
+		t.Fatalf("initial backlinks = %+v, err=%v", links, err)
+	}
+
+	write("source.md", "---\npage_id: source\ntitle: Source\n---\nSee [target B](target-b.md).\n")
+	if err := searcher.refresh(context.Background(), true); err != nil {
+		t.Fatal(err)
+	}
+	links, err = searcher.GetBacklinks(context.Background(), "", "target-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(links) != 0 {
+		t.Fatalf("changed link remained in backlinks = %+v", links)
+	}
+	links, err = searcher.GetBacklinks(context.Background(), "", "target-b")
+	if err != nil || len(links) != 1 || links[0].SourcePageID != "source" {
+		t.Fatalf("changed link backlinks = %+v, err=%v", links, err)
+	}
+
+	if err := os.Remove(filepath.Join(dir, "source.md")); err != nil {
+		t.Fatal(err)
+	}
+	if err := searcher.refresh(context.Background(), true); err != nil {
+		t.Fatal(err)
+	}
+	links, err = searcher.GetBacklinks(context.Background(), "", "target-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(links) != 0 {
+		t.Fatalf("deleted source remained in backlinks = %+v", links)
+	}
+}
