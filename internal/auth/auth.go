@@ -98,6 +98,8 @@ type ctxKey int
 
 const ctxKeyUserID ctxKey = iota
 
+const maxMCPRequestBodyBytes int64 = 4 << 20
+
 // UserIDFromCtx 从 context 中取出远程验证返回的用户 ID；未设置时返回空字符串。
 func UserIDFromCtx(ctx context.Context) string {
 	v, _ := ctx.Value(ctxKeyUserID).(string)
@@ -273,6 +275,10 @@ func hostAllowed(rawURL string, allowed []string) bool {
 // 直接在 HTTP 层注入的 context value 无法到达 tool handler）。
 func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, ok := a.readRequestBody(w, r)
+		if !ok {
+			return
+		}
 		ip := ClientIP(r)
 
 		// 0) 受信任网段直接放行(IP 白名单),无需 Bearer 令牌。
@@ -280,7 +286,7 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 		//    RemoteAddr,杜绝伪造转发头绕过;仅当部署在可信代理后才信任 X-Forwarded-For。
 		if len(a.cfg.AllowedCIDRs) > 0 {
 			if srcIP := a.securityClientIP(r); srcIP != nil && a.ipAllowed(srcIP) {
-				next.ServeHTTP(w, r)
+				a.serveAuthenticated(w, r, next, body, authenticationDecision{})
 				return
 			}
 		}
@@ -307,24 +313,11 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 					}
 				}
 
-				// 租户级工具 ACL 权限检查
-				toolName, bodyBytes, err := extractToolName(r)
-				if err != nil {
-					a.deny(w, r, ip, fmt.Sprintf("读取请求 payload 失败: %v", err))
-					return
-				}
-				if len(bodyBytes) > 0 {
-					r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
-				}
-
-				if toolName != "" {
-					if !isToolAllowed(toolName, tenant.Config.AllowedTools) {
-						a.deny(w, r, ip, fmt.Sprintf("租户 %s 无权调用工具 %s", tenant.Config.Name, toolName))
-						return
-					}
-				}
-
-				next.ServeHTTP(w, r)
+				a.serveAuthenticated(w, r, next, body, authenticationDecision{
+					mode:      "tenant",
+					principal: tenant.Config.UserID,
+					tenant:    tenant,
+				})
 				return
 			}
 		}
@@ -332,7 +325,7 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 		// 2) 本地常量时间比对 (全局静态 Token 兜底)。
 		if a.cfg.LocalToken != "" &&
 			subtle.ConstantTimeCompare([]byte(token), []byte(a.cfg.LocalToken)) == 1 {
-			next.ServeHTTP(w, r)
+			a.serveAuthenticated(w, r, next, body, authenticationDecision{mode: "local"})
 			return
 		}
 
@@ -350,7 +343,10 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 						a.sessionUserID.Store(sid, userID)
 					}
 				}
-				next.ServeHTTP(w, r.WithContext(ctx))
+				a.serveAuthenticated(w, r.WithContext(ctx), next, body, authenticationDecision{
+					mode:      "remote",
+					principal: userID,
+				})
 				return
 			}
 		}
@@ -484,6 +480,12 @@ func (a *Authenticator) deny(w http.ResponseWriter, r *http.Request, ip, reason 
 	http.Error(w, "Unauthorized", http.StatusUnauthorized)
 }
 
+func (a *Authenticator) reject(w http.ResponseWriter, r *http.Request, status int, reason string) {
+	logger.Errorf("[Auth] 请求拒绝: %s %s from %s, token=%s (%s)",
+		r.Method, r.URL.Path, ClientIP(r), mask(r.Header.Get("Authorization")), reason)
+	http.Error(w, http.StatusText(status), status)
+}
+
 // verifyRemote 查缓存→限流→发起远程验证,并回写缓存。
 // 返回 (验证通过, userID)；userID 在远程响应未携带时为空字符串。
 func (a *Authenticator) verifyRemote(ctx context.Context, token string) (bool, string) {
@@ -595,29 +597,156 @@ func mask(s string) string {
 	return s[:2] + "…" + s[n-2:]
 }
 
-type jsonRPCRequest struct {
-	Method string `json:"method"`
-	Params struct {
-		Name string `json:"name"`
-	} `json:"params"`
+type authenticationDecision struct {
+	mode      string
+	principal string
+	tenant    *Tenant
 }
 
-func extractToolName(r *http.Request) (string, []byte, error) {
-	if r.Method != http.MethodPost || r.Body == nil {
-		return "", nil, nil
-	}
-	bodyBytes, err := io.ReadAll(io.LimitReader(r.Body, 64*1024))
-	if err != nil {
-		return "", nil, err
-	}
+type inspectedRPC struct {
+	method        string
+	toolName      string
+	requestedUser string
+	envelope      map[string]json.RawMessage
+	params        map[string]json.RawMessage
+	arguments     map[string]json.RawMessage
+}
 
-	var rpcReq jsonRPCRequest
-	if err := json.Unmarshal(bodyBytes, &rpcReq); err == nil {
-		if rpcReq.Method == "tools/call" {
-			return rpcReq.Params.Name, bodyBytes, nil
+func (a *Authenticator) readRequestBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
+	if r.Method != http.MethodPost || r.Body == nil {
+		return nil, true
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxMCPRequestBodyBytes+1))
+	if err != nil {
+		a.reject(w, r, http.StatusBadRequest, fmt.Sprintf("read MCP payload: %v", err))
+		return nil, false
+	}
+	if int64(len(body)) > maxMCPRequestBodyBytes {
+		a.reject(w, r, http.StatusRequestEntityTooLarge, "MCP payload exceeds 4 MiB")
+		return nil, false
+	}
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	return body, true
+}
+
+func decodeObject(raw []byte, field string) (map[string]json.RawMessage, error) {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &object); err != nil || object == nil {
+		return nil, fmt.Errorf("invalid JSON-RPC %s", field)
+	}
+	return object, nil
+}
+
+func decodeOptionalString(object map[string]json.RawMessage, key string) (string, error) {
+	raw, ok := object[key]
+	if !ok {
+		return "", nil
+	}
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return "", fmt.Errorf("invalid JSON-RPC %s", key)
+	}
+	return strings.TrimSpace(value), nil
+}
+
+func inspectRPC(body []byte) (*inspectedRPC, error) {
+	envelope, err := decodeObject(body, "envelope")
+	if err != nil {
+		return nil, err
+	}
+	method, err := decodeOptionalString(envelope, "method")
+	if err != nil || method == "" {
+		return nil, fmt.Errorf("invalid JSON-RPC method")
+	}
+	inspected := &inspectedRPC{method: method, envelope: envelope}
+	if method != "tools/call" {
+		return inspected, nil
+	}
+	params, err := decodeObject(envelope["params"], "params")
+	if err != nil {
+		return nil, err
+	}
+	inspected.params = params
+	inspected.toolName, err = decodeOptionalString(params, "name")
+	if err != nil {
+		return nil, err
+	}
+	arguments := make(map[string]json.RawMessage)
+	if raw, ok := params["arguments"]; ok {
+		arguments, err = decodeObject(raw, "arguments")
+		if err != nil {
+			return nil, err
 		}
 	}
-	return "", bodyBytes, nil
+	inspected.arguments = arguments
+	inspected.requestedUser, err = decodeOptionalString(arguments, "userId")
+	return inspected, err
+}
+
+func (rpc *inspectedRPC) bindPrincipal(principal string) ([]byte, error) {
+	userID, err := json.Marshal(principal)
+	if err != nil {
+		return nil, err
+	}
+	rpc.arguments["userId"] = userID
+	arguments, err := json.Marshal(rpc.arguments)
+	if err != nil {
+		return nil, err
+	}
+	rpc.params["arguments"] = arguments
+	params, err := json.Marshal(rpc.params)
+	if err != nil {
+		return nil, err
+	}
+	rpc.envelope["params"] = params
+	return json.Marshal(rpc.envelope)
+}
+
+func (a *Authenticator) serveAuthenticated(
+	w http.ResponseWriter,
+	r *http.Request,
+	next http.Handler,
+	body []byte,
+	decision authenticationDecision,
+) {
+	if r.Method != http.MethodPost || len(body) == 0 {
+		next.ServeHTTP(w, r)
+		return
+	}
+	if decision.tenant == nil && decision.principal == "" {
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		next.ServeHTTP(w, r)
+		return
+	}
+	rpc, err := inspectRPC(body)
+	if err != nil {
+		a.reject(w, r, http.StatusBadRequest, "invalid MCP request payload")
+		return
+	}
+	if decision.tenant != nil && rpc.method == "tools/call" {
+		if rpc.toolName == "" || !isToolAllowed(rpc.toolName, decision.tenant.Config.AllowedTools) {
+			a.deny(w, r, ClientIP(r), "tenant tool access denied")
+			return
+		}
+	}
+	if decision.principal != "" && rpc.method == "tools/call" {
+		routed := strings.TrimSpace(trace.UserIDFromContext(r.Context()))
+		if (routed != "" && routed != decision.principal) ||
+			(rpc.requestedUser != "" && rpc.requestedUser != decision.principal) {
+			a.reject(w, r, http.StatusForbidden, fmt.Sprintf(
+				"authenticated userId conflict principal=%s routed=%s requested=%s",
+				mask(decision.principal), mask(routed), mask(rpc.requestedUser),
+			))
+			return
+		}
+		body, err = rpc.bindPrincipal(decision.principal)
+		if err != nil {
+			a.reject(w, r, http.StatusBadRequest, "invalid MCP request payload")
+			return
+		}
+	}
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	next.ServeHTTP(w, r)
 }
 
 func isToolAllowed(toolName string, allowed []string) bool {

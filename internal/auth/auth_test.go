@@ -2,6 +2,9 @@ package auth
 
 import (
 	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +14,7 @@ import (
 	"time"
 
 	"github.com/wuxujun/xktmcp/internal/logger"
+	"github.com/wuxujun/xktmcp/internal/trace"
 )
 
 func mustAuthenticator(t *testing.T, cfg Config) *Authenticator {
@@ -477,5 +481,100 @@ func TestMultiTenantMixedConfig(t *testing.T) {
 	req3.Header.Set("Authorization", "Bearer "+hashTenantPlain)
 	if code := serve(a, req3); code != http.StatusUnauthorized {
 		t.Errorf("hash-tenant student_search 应 401, got %d", code)
+	}
+}
+
+func TestTenantLargeToolPayloadReachesHandlerIntact(t *testing.T) {
+	a := mustAuthenticator(t, Config{Tenants: []TenantConfig{{
+		Name: "writer", Token: "secret", AllowedTools: []string{"wiki_upsert_page"},
+	}}})
+	content := strings.Repeat("文档内容", 20_000)
+	body := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"wiki_upsert_page","arguments":{"content":%q}}}`, content)
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer secret")
+	var received string
+	rr := httptest.NewRecorder()
+	a.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data, _ := io.ReadAll(r.Body)
+		received = string(data)
+		w.WriteHeader(http.StatusOK)
+	})).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK || received != body {
+		t.Fatalf("status=%d body preserved=%t", rr.Code, received == body)
+	}
+}
+
+func TestMCPPayloadOverLimitReturns413(t *testing.T) {
+	a := mustAuthenticator(t, Config{LocalToken: "secret"})
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(strings.Repeat("x", int(maxMCPRequestBodyBytes)+1)))
+	req.Header.Set("Authorization", "Bearer secret")
+	called := false
+	rr := httptest.NewRecorder()
+	a.Middleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true })).ServeHTTP(rr, req)
+	if rr.Code != http.StatusRequestEntityTooLarge || called {
+		t.Fatalf("status=%d called=%t, want 413 false", rr.Code, called)
+	}
+}
+
+func TestTenantPayloadAndPrincipalPolicy(t *testing.T) {
+	tests := []struct {
+		name, body, routedUser, principal string
+		wantStatus                        int
+		wantCalled                        bool
+		wantUser                          string
+	}{
+		{"malformed", `{`, "", "user-a", http.StatusBadRequest, false, ""},
+		{"missing tool", `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"arguments":{}}}`, "", "user-a", http.StatusUnauthorized, false, ""},
+		{"inject principal", `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"wiki_search","arguments":{"query":"x"}}}`, "", "user-a", http.StatusOK, true, "user-a"},
+		{"matching principal", `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"wiki_search","arguments":{"userId":"user-a"}}}`, "user-a", "user-a", http.StatusOK, true, "user-a"},
+		{"body conflict", `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"wiki_search","arguments":{"userId":"user-b"}}}`, "", "user-a", http.StatusForbidden, false, ""},
+		{"route conflict", `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"wiki_search","arguments":{}}}`, "user-b", "user-a", http.StatusForbidden, false, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a := mustAuthenticator(t, Config{Tenants: []TenantConfig{{Name: "tenant-a", Token: "secret", UserID: tt.principal, AllowedTools: []string{"wiki_search"}}}})
+			req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(tt.body))
+			req.Header.Set("Authorization", "Bearer secret")
+			if tt.routedUser != "" {
+				req = req.WithContext(trace.WithUserID(req.Context(), tt.routedUser))
+			}
+			called, gotUser := false, ""
+			rr := httptest.NewRecorder()
+			a.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				called = true
+				var envelope struct {
+					Params struct {
+						Arguments struct {
+							UserID string `json:"userId"`
+						} `json:"arguments"`
+					} `json:"params"`
+				}
+				_ = json.NewDecoder(r.Body).Decode(&envelope)
+				gotUser = envelope.Params.Arguments.UserID
+				w.WriteHeader(http.StatusOK)
+			})).ServeHTTP(rr, req)
+			if rr.Code != tt.wantStatus || called != tt.wantCalled || gotUser != tt.wantUser {
+				t.Fatalf("status=%d called=%t user=%q", rr.Code, called, gotUser)
+			}
+		})
+	}
+}
+
+func TestTenantWithoutPrincipalPreservesPayloadBytes(t *testing.T) {
+	a := mustAuthenticator(t, Config{Tenants: []TenantConfig{{
+		Name: "tenant-a", Token: "secret", AllowedTools: []string{"wiki_search"},
+	}}})
+	body := `{"jsonrpc":"2.0","id":1,"extension":{"keep":"me"},"method":"tools/call","params":{"name":"wiki_search","arguments":{"query":"x","future":true},"_meta":{"keep":true}}}`
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer secret")
+	var received string
+	rr := httptest.NewRecorder()
+	a.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data, _ := io.ReadAll(r.Body)
+		received = string(data)
+		w.WriteHeader(http.StatusOK)
+	})).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK || received != body {
+		t.Fatalf("status=%d body preserved=%t", rr.Code, received == body)
 	}
 }
