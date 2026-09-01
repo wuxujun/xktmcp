@@ -204,6 +204,10 @@ func New(cfg Config) (*Authenticator, error) {
 	// map key 统一为 SHA-256 哈希,保证内存中不存明文令牌。
 	// 优先使用 TokenHash(预计算哈希);若未配置则对 Token 明文即时哈希后丢弃明文。
 	for _, tc := range cfg.Tenants {
+		tc.Name = strings.TrimSpace(tc.Name)
+		if tc.Name == "" {
+			return nil, fmt.Errorf("tenant name must not be empty")
+		}
 		// 确定 map key(哈希值)
 		var hashKey string
 		switch {
@@ -212,7 +216,7 @@ func New(cfg Config) (*Authenticator, error) {
 			hashKey = strings.ToLower(strings.TrimSpace(tc.TokenHash))
 			decoded, err := hex.DecodeString(hashKey)
 			if err != nil || len(decoded) != sha256.Size {
-				continue
+				return nil, fmt.Errorf("tenant %q has invalid token_hash", tc.Name)
 			}
 		case strings.TrimSpace(tc.Token) != "":
 			// 兼容路径:对明文令牌哈希后存储;完成后丢弃明文引用。
@@ -222,6 +226,9 @@ func New(cfg Config) (*Authenticator, error) {
 		}
 		if hashKey == "" {
 			continue
+		}
+		if _, exists := a.tenantsByToken[hashKey]; exists {
+			return nil, fmt.Errorf("duplicate tenant token hash for %q", tc.Name)
 		}
 		var limiter *tenantLimiter
 		if tc.RateRPS > 0 {

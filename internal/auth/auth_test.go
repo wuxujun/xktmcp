@@ -115,6 +115,31 @@ func TestNewRejectsConfiguredTenantsWithWhitespaceOnlyToken(t *testing.T) {
 	}
 }
 
+func TestNewRejectsInvalidTenantTokenHash(t *testing.T) {
+	_, err := New(Config{Tenants: []TenantConfig{{Name: "broken", TokenHash: "not-a-sha256"}}})
+	if err == nil {
+		t.Fatal("New accepted an invalid tenant token_hash")
+	}
+}
+
+func TestNewRejectsDuplicateTenantTokenHash(t *testing.T) {
+	hash := hashToken("shared-secret")
+	_, err := New(Config{Tenants: []TenantConfig{
+		{Name: "tenant-a", TokenHash: hash},
+		{Name: "tenant-b", TokenHash: hash},
+	}})
+	if err == nil {
+		t.Fatal("New accepted duplicate tenant token hashes")
+	}
+}
+
+func TestNewRejectsTenantWithoutName(t *testing.T) {
+	_, err := New(Config{Tenants: []TenantConfig{{Token: "secret"}}})
+	if err == nil {
+		t.Fatal("New accepted a tenant without a name")
+	}
+}
+
 func TestTenantUserIDIsStoredAsPrincipal(t *testing.T) {
 	a := mustAuthenticator(t, Config{Tenants: []TenantConfig{{
 		Name: "tenant-a", Token: "secret", UserID: "user-a", AllowedTools: []string{"*"},
