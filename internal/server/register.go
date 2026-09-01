@@ -87,25 +87,39 @@ func RegisterAll(s *mcp.Server, wikiConfigPaths ...string) error {
 	return nil
 }
 
-// addTool 注册工具并包裹一层统一埋点:
+type toolHandler[In any] func(
+	context.Context,
+	*mcp.CallToolRequest,
+	In,
+) (*mcp.CallToolResult, any, error)
+
+// wrapToolHandler 注册工具并包裹一层统一埋点:
 //   - 从入参取 n8n 关联 id(或新生成)作为 trace id 注入 context,贯穿后续各层日志;
+//   - 校验可信认证主体与显式或路由 userId 的一致性;
 //   - 计时并上报 Prometheus 指标(调用量/错误数/耗时);
 //   - 写一条结构化【审计日志】:谁(querier)用哪个工具(tool)查了谁(subject,已脱敏)、
 //     结果状态与耗时、trace_id——满足「谁查了哪个学员」的合规留痕诉求;
 //   - 调用结束打一条带 trace_id 的摘要日志(状态 + 耗时)。
 //
 // 失败判定:handler 返回 error 或结果 IsError=true 都计为 error。
-func addTool[In auditable](
-	s *mcp.Server,
-	tool *mcp.Tool,
-	h func(context.Context, *mcp.CallToolRequest, In) (*mcp.CallToolResult, any, error),
-) {
-	name := tool.Name
-	wrapped := func(ctx context.Context, req *mcp.CallToolRequest, in In) (*mcp.CallToolResult, any, error) {
+func wrapToolHandler[In auditable](name string, h toolHandler[In]) toolHandler[In] {
+	return func(ctx context.Context, req *mcp.CallToolRequest, in In) (*mcp.CallToolResult, any, error) {
 		ctx, _ = trace.EnsureID(ctx, in.CorrelationID())
 
+		querier, identityErr := trace.ResolveUserID(ctx, in.Querier())
 		start := time.Now()
-		res, out, err := h(ctx, req, in)
+		var res *mcp.CallToolResult
+		var out any
+		var err error
+		if identityErr != nil {
+			querier = trace.AuthenticatedUserIDFromContext(ctx)
+			res = &mcp.CallToolResult{
+				Content: []mcp.Content{&mcp.TextContent{Text: "authenticated user identity conflict"}},
+				IsError: true,
+			}
+		} else {
+			res, out, err = h(ctx, req, in)
+		}
 		elapsed := time.Since(start)
 
 		status := metrics.StatusOK
@@ -117,7 +131,7 @@ func addTool[In auditable](
 		// 审计留痕:被查主体脱敏后记录(手机号/证件号掩码,标识符部分掩码)。
 		logger.AuditCtx(ctx, map[string]any{
 			"tool":       name,
-			"querier":    trace.EffectiveUserID(ctx, in.Querier()),
+			"querier":    querier,
 			"subject":    pii.MaskSubject(in.AuditSubject()),
 			"status":     status,
 			"latency_ms": elapsed.Milliseconds(),
@@ -127,5 +141,8 @@ func addTool[In auditable](
 
 		return res, out, err
 	}
-	mcp.AddTool(s, tool, wrapped)
+}
+
+func addTool[In auditable](s *mcp.Server, tool *mcp.Tool, h toolHandler[In]) {
+	mcp.AddTool[In, any](s, tool, mcp.ToolHandlerFor[In, any](wrapToolHandler(tool.Name, h)))
 }
