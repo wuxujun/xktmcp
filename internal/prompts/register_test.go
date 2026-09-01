@@ -78,3 +78,31 @@ func TestRegisterAllPromptsAreDiscoverable(t *testing.T) {
 		t.Fatalf("messages count = %d, want 1", len(result.Messages))
 	}
 }
+
+func TestRegisterAllFiltersPromptsByTools(t *testing.T) {
+	server := mcp.NewServer(&mcp.Implementation{Name: "test-server", Version: "1.0.0"}, nil)
+	RegisterAll(server, map[string]bool{"wiki_search": true})
+	ctx := context.Background()
+	serverTransport, clientTransport := mcp.NewInMemoryTransports()
+	serverSession, err := server.Connect(ctx, serverTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverSession.Close()
+	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "1.0.0"}, nil)
+	clientSession, err := client.Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientSession.Close()
+	var names []string
+	for prompt, err := range clientSession.Prompts(ctx, nil) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		names = append(names, prompt.Name)
+	}
+	if strings.Join(names, ",") != "wiki_research" {
+		t.Fatalf("prompts=%v, want wiki_research", names)
+	}
+}

@@ -32,11 +32,11 @@ type auditable interface {
 
 // RegisterAll 装配依赖并注册所有 MCP 工具(均带统一埋点:trace id + 指标 + 摘要日志)。
 func RegisterAll(s *mcp.Server, wikiConfigPaths ...string) error {
-	prompts.RegisterAll(s)
 	enabledTools, err := parseEnabledTools(os.Getenv("MCP_ENABLED_TOOLS"))
 	if err != nil {
 		return err
 	}
+	prompts.RegisterAll(s, enabledTools)
 
 	wikiConfigPath := "config/wiki.json"
 	if len(wikiConfigPaths) > 0 && wikiConfigPaths[0] != "" {

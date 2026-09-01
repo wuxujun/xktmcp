@@ -10,35 +10,49 @@ import (
 
 // RegisterAll 注册可由 MCP 客户端通过 prompts/list 发现、通过 prompts/get
 // 展开的业务提示模板。Prompt 只描述工作流，实际数据仍由对应 Tool 获取。
-func RegisterAll(server *mcp.Server) {
-	server.AddPrompt(&mcp.Prompt{
-		Name:        "student_inquiry",
-		Title:       "学员信息查询",
-		Description: "查询学员档案、订单或考试信息，并处理同名学员歧义",
-		Arguments: []*mcp.PromptArgument{
-			{Name: "student", Description: "学员姓名、手机号或其他检索线索", Required: true},
-			{Name: "question", Description: "希望了解的问题，例如档案、订单或考试成绩", Required: true},
-		},
-	}, studentInquiry)
+func RegisterAll(server *mcp.Server, enabledTools ...map[string]bool) {
+	var enabled map[string]bool
+	if len(enabledTools) > 0 {
+		enabled = enabledTools[0]
+	}
+	if toolEnabled(enabled, "student_search") {
+		server.AddPrompt(&mcp.Prompt{
+			Name:        "student_inquiry",
+			Title:       "学员信息查询",
+			Description: "查询学员档案、订单或考试信息，并处理同名学员歧义",
+			Arguments: []*mcp.PromptArgument{
+				{Name: "student", Description: "学员姓名、手机号或其他检索线索", Required: true},
+				{Name: "question", Description: "希望了解的问题，例如档案、订单或考试成绩", Required: true},
+			},
+		}, studentInquiry)
+	}
 
-	server.AddPrompt(&mcp.Prompt{
-		Name:        "wiki_research",
-		Title:       "Wiki 知识检索",
-		Description: "检索 Wiki，读取相关词条并基于知识库回答问题",
-		Arguments: []*mcp.PromptArgument{
-			{Name: "query", Description: "需要检索和回答的问题", Required: true},
-			{Name: "category", Description: "可选的 Wiki 分类", Required: false},
-		},
-	}, wikiResearch)
+	if toolEnabled(enabled, "wiki_search") {
+		server.AddPrompt(&mcp.Prompt{
+			Name:        "wiki_research",
+			Title:       "Wiki 知识检索",
+			Description: "检索 Wiki，读取相关词条并基于知识库回答问题",
+			Arguments: []*mcp.PromptArgument{
+				{Name: "query", Description: "需要检索和回答的问题", Required: true},
+				{Name: "category", Description: "可选的 Wiki 分类", Required: false},
+			},
+		}, wikiResearch)
+	}
 
-	server.AddPrompt(&mcp.Prompt{
-		Name:        "organization_inquiry",
-		Title:       "员工与组织信息查询",
-		Description: "查询员工、教师、校区、院系、课程及其关系",
-		Arguments: []*mcp.PromptArgument{
-			{Name: "query", Description: "需要查询的员工或组织问题", Required: true},
-		},
-	}, organizationInquiry)
+	if toolEnabled(enabled, "staff_search") {
+		server.AddPrompt(&mcp.Prompt{
+			Name:        "organization_inquiry",
+			Title:       "员工与组织信息查询",
+			Description: "查询员工、教师、校区、院系、课程及其关系",
+			Arguments: []*mcp.PromptArgument{
+				{Name: "query", Description: "需要查询的员工或组织问题", Required: true},
+			},
+		}, organizationInquiry)
+	}
+}
+
+func toolEnabled(enabled map[string]bool, name string) bool {
+	return enabled == nil || enabled[name]
 }
 
 func studentInquiry(_ context.Context, req *mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
