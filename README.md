@@ -119,7 +119,7 @@ HTTP 模式继续调用 `BASE_URL/api/ai/wiki/search`：
 }
 ```
 
-默认读取 `config/wiki.json`，也可以通过 `-wiki-config=/path/to/wiki.json` 指定。配置文件不存在时默认使用 HTTP。Local 模式下，读取覆盖所有 `content_dirs`；新建、覆盖和追加只允许写入 `write_dir`（默认 `wiki/topics`），每次成功写入都会追加根目录 `log.md` 并立即刷新本地索引。反向链接同时识别相对 Markdown 链接和 `[[wiki link]]`。
+默认读取 `config/wiki.json`，也可以通过 `-wiki-config=/path/to/wiki.json` 指定。配置文件不存在时默认使用 HTTP。Local 模式下，读取覆盖所有 `content_dirs`；新建、覆盖和追加只允许写入 `write_dir`（默认 `wiki/topics`），每次成功写入都会追加根目录 `log.md` 并立即刷新本地索引。反向链接同时识别相对 Markdown 链接和 `[[wiki link]]`，并在索引刷新阶段预计算；只有写入成功并完成索引刷新后，新增或变更的反向链接才会对查询可见。
 
 Local 模式可以按 `userId` 显式映射不同目录。映射的每个用户拥有独立的搜索索引、目录树、页面、反向链接及写入目录；服务不会把 `userId` 直接拼接成文件路径：
 
