@@ -13,6 +13,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/wuxujun/xktmcp/internal/logger"
 	"github.com/wuxujun/xktmcp/internal/metrics"
+	"github.com/wuxujun/xktmcp/internal/model"
 	"github.com/wuxujun/xktmcp/internal/pii"
 	"github.com/wuxujun/xktmcp/internal/service"
 	"github.com/wuxujun/xktmcp/internal/trace"
@@ -84,7 +85,6 @@ func RagSearchTool() *mcp.Tool {
 		OutputSchema: outputSchema[RagSearchResponse](),
 	}
 }
-
 
 func rewriteQuery(query string) string {
 	q := query
@@ -202,6 +202,25 @@ func RagSearchHandler(
 	svc *service.RagService,
 ) func(context.Context, *mcp.CallToolRequest, RagSearchArgs) (*mcp.CallToolResult, any, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, args RagSearchArgs) (*mcp.CallToolResult, any, error) {
+		topK := args.TopK
+		if topK == 0 {
+			topK = 5
+		}
+		if topK < 1 || topK > 20 {
+			return &mcp.CallToolResult{Content: []mcp.Content{
+				&mcp.TextContent{Text: "invalid rag search parameters: top_k must be between 1 and 20"},
+			}, IsError: true}, nil, nil
+		}
+		minScore := args.MinScore
+		if minScore == 0 {
+			minScore = 0.1
+		}
+		if minScore < 0 || minScore > 1 {
+			return &mcp.CallToolResult{Content: []mcp.Content{
+				&mcp.TextContent{Text: "invalid rag search parameters: min_score must be between 0 and 1"},
+			}, IsError: true}, nil, nil
+		}
+
 		// userId 取得优先级：工具参数中的 userId > HTTP query param 注入的 ctx 值。
 		// 这样同时兼容 n8n body 传参和 /mcp?userId=xxx URL 传参两种调用方式。
 		userID := trace.EffectiveUserID(ctx, args.UserID)
@@ -217,7 +236,7 @@ func RagSearchHandler(
 		}
 
 		cacheKey := fmt.Sprintf("rag:search:%s:%s:%d:%.4f:%t:%t:%t",
-			userID, args.Query, args.TopK, args.MinScore, args.Rewrite, includeSources, includeChunks)
+			userID, args.Query, topK, minScore, args.Rewrite, includeSources, includeChunks)
 
 		if val, ok := ragCache.Get(cacheKey); ok {
 			cached := val.(ragCacheItem)
@@ -251,20 +270,28 @@ func RagSearchHandler(
 			}, nil, nil
 		}
 
-		// Set default values for top_k and min_score if they are 0
-		topK := args.TopK
-		if topK == 0 {
-			topK = 5
+		filtered := make([]model.Rag, 0, topK)
+		for _, item := range items {
+			if float64(item.Score) < minScore {
+				continue
+			}
+			filtered = append(filtered, item)
+			if len(filtered) == topK {
+				break
+			}
 		}
-		minScore := args.MinScore
-		if minScore == 0 {
-			minScore = 0.2
-		}
+		items = filtered
 
 		var contextParts []string
 		for i, item := range items {
 			// 知识库正文也过一遍脱敏(掩手机号/证件号),与学员数据响应口径一致。
-			part := fmt.Sprintf("## 片段%d\n标题: %s\n内容: %s\n来源: %s", i+1, item.Title, pii.Redact(item.Content), item.Url)
+			part := fmt.Sprintf("## 片段%d\n标题: %s", i+1, item.Title)
+			if includeChunks {
+				part += fmt.Sprintf("\n内容: %s", pii.Redact(item.Content))
+			}
+			if includeSources && item.Url != "" {
+				part += fmt.Sprintf("\n来源: %s", item.Url)
+			}
 			contextParts = append(contextParts, part)
 		}
 		contextStr := strings.Join(contextParts, "\n\n")

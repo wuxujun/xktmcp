@@ -2,9 +2,92 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/wuxujun/xktmcp/internal/client"
+	"github.com/wuxujun/xktmcp/internal/model"
+	"github.com/wuxujun/xktmcp/internal/service"
 )
+
+func newRagHandlerForTest(t *testing.T, items []model.Rag) func(context.Context, *mcp.CallToolRequest, RagSearchArgs) (*mcp.CallToolResult, any, error) {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/ai/rag/search" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": items})
+	}))
+	t.Cleanup(server.Close)
+	api := client.NewRagAPI(client.Config{BaseURL: server.URL, Timeout: 2 * time.Second})
+	return RagSearchHandler(service.NewRagService(api))
+}
+
+func TestRagSearchAppliesTopKAndMinScore(t *testing.T) {
+	handler := newRagHandlerForTest(t, []model.Rag{
+		{Title: "high", Content: "high content", Score: 0.95, Url: "https://example/high"},
+		{Title: "mid", Content: "mid content", Score: 0.85, Url: "https://example/mid"},
+		{Title: "low", Content: "low content", Score: 0.40, Url: "https://example/low"},
+	})
+	result, out, err := handler(context.Background(), nil, RagSearchArgs{Query: "policy", TopK: 2, MinScore: 0.8})
+	if err != nil || result == nil || result.IsError {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	response := out.(RagSearchResponse)
+	if response.Meta.HitCount != 2 || len(response.Chunks) != 2 || len(response.Sources) != 2 {
+		t.Fatalf("hit=%d chunks=%d sources=%d, want 2 each", response.Meta.HitCount, len(response.Chunks), len(response.Sources))
+	}
+	if strings.Contains(response.Context, "low content") {
+		t.Fatal("below-min-score result remained in context")
+	}
+}
+
+func TestRagSearchIncludeFlagsControlContextAndOutput(t *testing.T) {
+	handler := newRagHandlerForTest(t, []model.Rag{{Title: "policy", Content: "secret details", Score: 0.9, Url: "https://example/policy"}})
+	includeSources, includeChunks := false, false
+	_, out, err := handler(context.Background(), nil, RagSearchArgs{
+		Query: "policy", TopK: 5, MinScore: 0.1,
+		IncludeSources: &includeSources, IncludeChunks: &includeChunks,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	response := out.(RagSearchResponse)
+	if len(response.Sources) != 0 || len(response.Chunks) != 0 {
+		t.Fatalf("sources=%d chunks=%d, want both omitted", len(response.Sources), len(response.Chunks))
+	}
+	if strings.Contains(response.Context, "secret details") || strings.Contains(response.Context, "https://example/policy") {
+		t.Fatalf("context leaked disabled fields: %q", response.Context)
+	}
+}
+
+func TestRagSearchDefaultsMinScoreToPointOne(t *testing.T) {
+	handler := newRagHandlerForTest(t, []model.Rag{{Title: "borderline", Content: "content", Score: 0.15, Url: "https://example/borderline"}})
+	_, out, err := handler(context.Background(), nil, RagSearchArgs{Query: "policy"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	response := out.(RagSearchResponse)
+	if response.SearchStrategy.MinScore != 0.1 || response.Meta.HitCount != 1 {
+		t.Fatalf("strategy=%#v hit=%d, want min_score 0.1 and one result", response.SearchStrategy, response.Meta.HitCount)
+	}
+}
+
+func TestRagSearchRejectsOutOfRangeTopK(t *testing.T) {
+	handler := newRagHandlerForTest(t, nil)
+	result, _, err := handler(context.Background(), nil, RagSearchArgs{Query: "policy", TopK: 21})
+	if err != nil || result == nil || !result.IsError {
+		t.Fatalf("result=%#v err=%v, want MCP validation error", result, err)
+	}
+}
 
 func TestRewriteQuery(t *testing.T) {
 	tests := []struct {
