@@ -30,6 +30,23 @@ func TestBuildAuthConfigParsesRemoteCacheCapacity(t *testing.T) {
 	}
 }
 
+func TestReadinessHandler(t *testing.T) {
+	ready := false
+	handler := readinessHandler(func() bool { return ready })
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/ready", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("not-ready status=%d, want 503", rec.Code)
+	}
+
+	ready = true
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/ready", nil))
+	if rec.Code != http.StatusOK || rec.Body.String() != `{"status":"ready"}` {
+		t.Fatalf("ready response status=%d body=%q, want 200 ready", rec.Code, rec.Body.String())
+	}
+}
+
 func TestBuildAuthConfigRejectsNonPositiveRemoteCacheCapacity(t *testing.T) {
 	for _, value := range []string{"0", "-1", "not-a-number"} {
 		t.Run(value, func(t *testing.T) {

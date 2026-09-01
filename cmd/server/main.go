@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -112,6 +113,8 @@ func main() {
 		logger.Errorf("认证器初始化失败: %v", err)
 		os.Exit(1)
 	}
+	var ready atomic.Bool
+	ready.Store(true)
 
 	switch *transport {
 	case "stdio":
@@ -134,6 +137,7 @@ func main() {
 		mux := http.NewServeMux()
 		// 健康检查端点(免认证,供探针使用)
 		mux.HandleFunc("/health", healthHandler)
+		mux.Handle("/ready", readinessHandler(ready.Load))
 		// Prometheus 指标端点(免认证,供抓取;如需保护可置于网络隔离或反代后)
 		mux.Handle("/metrics", metrics.Handler())
 		// 客户端连接 /sse 路径来建立事件流
@@ -155,6 +159,7 @@ func main() {
 		mux := http.NewServeMux()
 		// 健康检查端点(免认证,供探针使用)
 		mux.HandleFunc("/health", healthHandler)
+		mux.Handle("/ready", readinessHandler(ready.Load))
 		// Prometheus 指标端点(免认证,供抓取;如需保护可置于网络隔离或反代后)
 		mux.Handle("/metrics", metrics.Handler())
 		// Streamable HTTP 默认通过单一路径处理
@@ -540,6 +545,19 @@ func healthHandler(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(`{"status":"ok"}`))
+}
+
+// readinessHandler 返回服务是否已完成工具与认证器初始化。
+func readinessHandler(ready func() bool) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if ready == nil || !ready() {
+			http.Error(w, "not ready", http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ready"}`))
+	})
 }
 
 // runServer 启动 HTTP 服务并支持优雅关闭。
