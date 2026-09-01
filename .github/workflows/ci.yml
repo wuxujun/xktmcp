@@ -36,6 +36,12 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      - name: Vulnerability scan
+        uses: golang/govulncheck-action@v1
+        with:
+          go-version-input: ${{ matrix.go-version }}
+          go-package: ./...
+
       - name: Build
         run: go build ./...
 
