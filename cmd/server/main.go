@@ -92,7 +92,11 @@ func main() {
 	if localToken == "" {
 		localToken = strings.TrimSpace(os.Getenv("AUTH_TOKEN"))
 	}
-	authenticator := auth.New(buildAuthConfig(localToken))
+	authenticator, err := auth.New(buildAuthConfig(localToken))
+	if err != nil {
+		logger.Errorf("认证配置非法: %v", err)
+		os.Exit(1)
+	}
 
 	// 将 MCPMiddleware 注册到 MCP Server：
 	// MCP SDK 会 detach HTTP request context，所以在 HTTP 中间件注入的 userID

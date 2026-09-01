@@ -13,6 +13,15 @@ import (
 	"github.com/wuxujun/xktmcp/internal/logger"
 )
 
+func mustAuthenticator(t *testing.T, cfg Config) *Authenticator {
+	t.Helper()
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	return a
+}
+
 func newReq(authHeader, rawQuery string) *http.Request {
 	r := httptest.NewRequest(http.MethodGet, "/mcp?"+rawQuery, nil)
 	if authHeader != "" {
@@ -31,7 +40,7 @@ func serve(a *Authenticator, r *http.Request) int {
 
 // 本地令牌:正确放行,错误拒绝。
 func TestLocalTokenMatch(t *testing.T) {
-	a := New(Config{LocalToken: "secret-123"})
+	a := mustAuthenticator(t, Config{LocalToken: "secret-123"})
 	if code := serve(a, newReq("Bearer secret-123", "")); code != http.StatusOK {
 		t.Fatalf("正确令牌应放行,得到 %d", code)
 	}
@@ -46,7 +55,7 @@ func TestLocalTokenMatch(t *testing.T) {
 func TestAuthenticationLogsFailuresOnly(t *testing.T) {
 	var logs bytes.Buffer
 	logger.Init(&logs)
-	a := New(Config{LocalToken: "secret-123"})
+	a := mustAuthenticator(t, Config{LocalToken: "secret-123"})
 
 	if code := serve(a, newReq("Bearer secret-123", "")); code != http.StatusOK {
 		t.Fatalf("correct token returned %d", code)
@@ -66,20 +75,39 @@ func TestAuthenticationLogsFailuresOnly(t *testing.T) {
 
 // 关键回归:URL ?token= 不再被接受。
 func TestURLTokenRejected(t *testing.T) {
-	a := New(Config{LocalToken: "secret-123"})
+	a := mustAuthenticator(t, Config{LocalToken: "secret-123"})
 	if code := serve(a, newReq("", "token=secret-123")); code != http.StatusUnauthorized {
 		t.Fatalf("URL ?token= 必须被拒绝(只收 Authorization 头),得到 %d", code)
 	}
 }
 
-// 远程兜底:白名单未命中则禁用远程,仅本地比对生效。
-func TestRemoteHostNotAllowed(t *testing.T) {
-	a := New(Config{
+func TestNewRejectsDisallowedRemoteHost(t *testing.T) {
+	_, err := New(Config{
 		RemoteVerifyURL: "https://evil.example.com/check",
 		AllowedHosts:    []string{"yk.xkt.com"},
 	})
-	if a.remoteOK {
-		t.Fatal("非白名单主机的远程验证应被禁用")
+	if err == nil {
+		t.Fatal("New accepted a remote verification host outside the allowlist")
+	}
+}
+
+func TestNewRejectsConfiguredTenantsWithoutUsableToken(t *testing.T) {
+	_, err := New(Config{
+		TenantsConfigured: true,
+		Tenants:           []TenantConfig{{Name: "broken"}},
+	})
+	if err == nil {
+		t.Fatal("New accepted AUTH_TENANTS without a usable token")
+	}
+}
+
+func TestTenantUserIDIsStoredAsPrincipal(t *testing.T) {
+	a := mustAuthenticator(t, Config{Tenants: []TenantConfig{{
+		Name: "tenant-a", Token: "secret", UserID: "user-a", AllowedTools: []string{"*"},
+	}}})
+	tenant := a.tenantsByToken[hashToken("secret")]
+	if tenant == nil || tenant.Config.UserID != "user-a" {
+		t.Fatalf("tenant principal = %#v, want user-a", tenant)
 	}
 }
 
@@ -97,7 +125,7 @@ func TestRemoteVerifyCache(t *testing.T) {
 	defer backend.Close()
 
 	host := strings.TrimPrefix(backend.URL, "http://")
-	a := New(Config{
+	a := mustAuthenticator(t, Config{
 		RemoteVerifyURL: backend.URL,
 		AllowedHosts:    []string{host},
 		PositiveTTL:     time.Minute,
@@ -129,7 +157,7 @@ func TestRemoteVerifyRateLimit(t *testing.T) {
 	defer backend.Close()
 
 	host := strings.TrimPrefix(backend.URL, "http://")
-	a := New(Config{
+	a := mustAuthenticator(t, Config{
 		RemoteVerifyURL: backend.URL,
 		AllowedHosts:    []string{host},
 		NegativeTTL:     time.Minute,
@@ -216,7 +244,7 @@ func serveFrom(a *Authenticator, remoteAddr, authHeader string, headers map[stri
 
 // IP 白名单:命中网段即放行(无需 Bearer 令牌),未命中且无令牌则拒绝。
 func TestIPAllowlistBypass(t *testing.T) {
-	a := New(Config{AllowedCIDRs: mustCIDRs(t, "160.79.104.0/21")})
+	a := mustAuthenticator(t, Config{AllowedCIDRs: mustCIDRs(t, "160.79.104.0/21")})
 
 	// 网段内(无 Authorization 头)→ 放行。
 	if code := serveFrom(a, "160.79.105.42:33000", "", nil); code != http.StatusOK {
@@ -238,7 +266,7 @@ func TestIPAllowlistBypass(t *testing.T) {
 
 // IP 白名单与本地令牌共存:网段外仍可凭正确令牌放行。
 func TestIPAllowlistWithTokenFallback(t *testing.T) {
-	a := New(Config{
+	a := mustAuthenticator(t, Config{
 		LocalToken:   "secret-123",
 		AllowedCIDRs: mustCIDRs(t, "160.79.104.0/21"),
 	})
@@ -254,7 +282,7 @@ func TestIPAllowlistWithTokenFallback(t *testing.T) {
 
 // 安全关键:默认不信任 X-Forwarded-For,伪造转发头无法绕过认证。
 func TestIPAllowlistForwardedHeaderNotTrustedByDefault(t *testing.T) {
-	a := New(Config{AllowedCIDRs: mustCIDRs(t, "160.79.104.0/21")})
+	a := mustAuthenticator(t, Config{AllowedCIDRs: mustCIDRs(t, "160.79.104.0/21")})
 	// 真实连接在网段外,但伪造 XFF 假装在网段内 → 必须仍 401。
 	hdr := map[string]string{"X-Forwarded-For": "160.79.105.1"}
 	if code := serveFrom(a, "8.8.8.8:5000", "", hdr); code != http.StatusUnauthorized {
@@ -269,7 +297,7 @@ func TestIPAllowlistForwardedHeaderNotTrustedByDefault(t *testing.T) {
 
 // 部署在可信代理后:开启 TrustForwardedHeader 后按 XFF 首个地址判定。
 func TestIPAllowlistForwardedHeaderTrusted(t *testing.T) {
-	a := New(Config{
+	a := mustAuthenticator(t, Config{
 		AllowedCIDRs:         mustCIDRs(t, "160.79.104.0/21"),
 		TrustForwardedHeader: true,
 	})
@@ -328,7 +356,7 @@ func TestMultiTenantAuth(t *testing.T) {
 			},
 		},
 	}
-	a := New(config)
+	a := mustAuthenticator(t, config)
 
 	// Case 1: Tenant 1 调用允许的工具 -> 200 OK
 	req1 := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","method":"tools/call","params":{"name":"rag_search"}}`))
@@ -369,7 +397,7 @@ func TestMultiTenantTokenHash(t *testing.T) {
 			},
 		},
 	}
-	a := New(config)
+	a := mustAuthenticator(t, config)
 
 	// 租户哈希配置下,map key 为哈希值,不含明文令牌。
 	if _, found := a.tenantsByToken[tokenPlain]; found {
@@ -415,7 +443,7 @@ func TestMultiTenantMixedConfig(t *testing.T) {
 			},
 		},
 	}
-	a := New(config)
+	a := mustAuthenticator(t, config)
 
 	// plain-tenant 调用允许工具 -> 200
 	req1 := httptest.NewRequest(http.MethodPost, "/mcp",

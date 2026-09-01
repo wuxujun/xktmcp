@@ -40,6 +40,7 @@ type TenantConfig struct {
 	Name         string   `json:"name"`
 	Token        string   `json:"token"`         // 明文令牌(向后兼容,启动后立即哈希存储)
 	TokenHash    string   `json:"token_hash"`    // 预计算 SHA-256 哈希(推荐,优先使用)
+	UserID       string   `json:"user_id"`       // 可选的租户主体标识
 	AllowedTools []string `json:"allowed_tools"` // 允许调用的工具列表，"*" 表示允许所有
 	RateRPS      float64  `json:"rate_rps"`      // 租户专属限流速率 (每秒请求数)
 	RateBurst    int      `json:"rate_burst"`    // 租户专属限流突发容量
@@ -51,6 +52,8 @@ type Config struct {
 	LocalToken string
 	// Tenants 存储多租户配置。
 	Tenants []TenantConfig
+	// TenantsConfigured 表示 AUTH_TENANTS 已被显式配置，即使解析后没有租户也应报错。
+	TenantsConfigured bool
 	// RemoteVerifyURL 是远程验证端点(完整 URL,如 https://yk.xkt.com/api/auth/check);
 	// 为空表示不启用远程兜底。
 	RemoteVerifyURL string
@@ -75,6 +78,8 @@ type Config struct {
 	RemoteRateRPS   float64       // 远程验证每秒最大请求数(令牌桶速率)
 	RemoteRateBurst int           // 令牌桶突发容量
 	RemoteTimeout   time.Duration // 单次远程验证 HTTP 超时
+	// RemoteCacheMaxEntries 是远程验证缓存最大条目数；零值使用默认值。
+	RemoteCacheMaxEntries int
 }
 
 // Enabled 报告是否配置了任意一种认证方式(本地令牌 / 多租户 / 远程兜底 / IP 白名单)。
@@ -145,7 +150,7 @@ type Authenticator struct {
 	bucket    float64   // 当前令牌桶余量
 	lastRef   time.Time // 上次补充时间
 
-	cache sync.Map // 缓存校验结果 (key: sha256_hash_string, value: cacheEntry)
+	cache *verificationCache // 缓存校验结果 (key: sha256_hash_string)
 
 	// sessionUserID 把 MCP sessionID 映射到远程验证返回的 userID。
 	// MCP SDK 会 detach HTTP request context，HTTP 中间件注入的 context value
@@ -156,10 +161,14 @@ type Authenticator struct {
 }
 
 // Enabled 报告该认证器是否启用了任意一种认证方式。
-func (a *Authenticator) Enabled() bool { return a.cfg.Enabled() }
+func (a *Authenticator) Enabled() bool {
+	return a.cfg.LocalToken != "" || len(a.tenantsByToken) > 0 || a.remoteOK || len(a.cfg.AllowedCIDRs) > 0
+}
 
 // New 构造 Authenticator,并对远程验证 URL 做白名单校验。
-func New(cfg Config) *Authenticator {
+func New(cfg Config) (*Authenticator, error) {
+	const defaultRemoteCacheMaxEntries = 4096
+
 	if cfg.PositiveTTL <= 0 {
 		cfg.PositiveTTL = 5 * time.Minute
 	}
@@ -175,29 +184,40 @@ func New(cfg Config) *Authenticator {
 	if cfg.RemoteTimeout <= 0 {
 		cfg.RemoteTimeout = 3 * time.Second
 	}
+	if cfg.RemoteCacheMaxEntries == 0 {
+		cfg.RemoteCacheMaxEntries = defaultRemoteCacheMaxEntries
+	}
+	if cfg.RemoteCacheMaxEntries < 0 {
+		return nil, fmt.Errorf("remote auth cache capacity must be positive")
+	}
+	if cfg.RemoteVerifyURL != "" && !hostAllowed(cfg.RemoteVerifyURL, cfg.AllowedHosts) {
+		return nil, fmt.Errorf("remote verification URL is invalid or its host is not allowed")
+	}
 
 	a := &Authenticator{
-		cfg:        cfg,
-		httpClient: &http.Client{Timeout: cfg.RemoteTimeout},
-		bucket:     float64(cfg.RemoteRateBurst),
-		lastRef:    time.Now(),
-	}
-	a.remoteOK = cfg.RemoteVerifyURL != "" && hostAllowed(cfg.RemoteVerifyURL, cfg.AllowedHosts)
-	if cfg.RemoteVerifyURL != "" && !a.remoteOK {
-		logger.Errorf("[Auth] 远程验证 URL 的主机不在白名单内,已禁用远程兜底: %s", cfg.RemoteVerifyURL)
+		cfg:            cfg,
+		httpClient:     &http.Client{Timeout: cfg.RemoteTimeout},
+		cache:          newVerificationCache(cfg.RemoteCacheMaxEntries, time.Now),
+		remoteOK:       cfg.RemoteVerifyURL != "",
+		bucket:         float64(cfg.RemoteRateBurst),
+		lastRef:        time.Now(),
+		tenantsByToken: make(map[string]*Tenant),
 	}
 
 	// 初始化租户映射与限流器。
 	// map key 统一为 SHA-256 哈希,保证内存中不存明文令牌。
 	// 优先使用 TokenHash(预计算哈希);若未配置则对 Token 明文即时哈希后丢弃明文。
-	a.tenantsByToken = make(map[string]*Tenant)
 	for _, tc := range cfg.Tenants {
 		// 确定 map key(哈希值)
 		var hashKey string
 		switch {
-		case tc.TokenHash != "":
+		case strings.TrimSpace(tc.TokenHash) != "":
 			// 推荐路径:配置侧已预计算哈希,直接使用,明文令牌从未出现在进程内。
 			hashKey = strings.ToLower(strings.TrimSpace(tc.TokenHash))
+			decoded, err := hex.DecodeString(hashKey)
+			if err != nil || len(decoded) != sha256.Size {
+				continue
+			}
 		case tc.Token != "":
 			// 兼容路径:对明文令牌哈希后存储;完成后丢弃明文引用。
 			hashKey = hashToken(tc.Token)
@@ -218,6 +238,7 @@ func New(cfg Config) *Authenticator {
 		// 存入 map 前清除明文令牌字段,进一步减少内存中明文的生命周期。
 		tcStored := tc
 		tcStored.Token = ""
+		tcStored.UserID = strings.TrimSpace(tcStored.UserID)
 		a.tenantsByToken[hashKey] = &Tenant{
 			Config:  tcStored,
 			Limiter: limiter,
@@ -225,7 +246,11 @@ func New(cfg Config) *Authenticator {
 		logger.Infof("[Auth] 租户 %s 已注册(哈希存储)", tc.Name)
 	}
 
-	return a
+	if cfg.TenantsConfigured && len(a.tenantsByToken) == 0 {
+		return nil, fmt.Errorf("AUTH_TENANTS contains no usable token")
+	}
+
+	return a, nil
 }
 
 // hostAllowed 校验 rawURL 的 scheme 为 http(s) 且 host 命中白名单。
@@ -464,12 +489,9 @@ func (a *Authenticator) deny(w http.ResponseWriter, r *http.Request, ip, reason 
 func (a *Authenticator) verifyRemote(ctx context.Context, token string) (bool, string) {
 	key := hashToken(token)
 
-	// 1. 无锁从 sync.Map 载入缓存
-	if val, ok := a.cache.Load(key); ok {
-		e := val.(cacheEntry)
-		if time.Now().Before(e.exp) {
-			return e.ok, e.userID
-		}
+	// 1. 从缓存载入验证结果。
+	if e, ok := a.cache.Get(key); ok {
+		return e.ok, e.userID
 	}
 
 	// 2. 缓存失效，尝试远程验证（需加限流锁防瞬间穿透爆破）
@@ -489,8 +511,8 @@ func (a *Authenticator) verifyRemote(ctx context.Context, token string) (bool, s
 		ttl = a.cfg.PositiveTTL
 	}
 
-	// 3. 无锁回写缓存到 sync.Map（包含 userID）
-	a.cache.Store(key, cacheEntry{ok: ok, userID: userID, exp: time.Now().Add(ttl)})
+	// 3. 回写缓存（包含 userID）
+	a.cache.Set(key, cacheEntry{ok: ok, userID: userID, exp: time.Now().Add(ttl)})
 	return ok, userID
 }
 
