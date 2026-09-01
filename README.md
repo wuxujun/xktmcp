@@ -18,6 +18,8 @@ go run ./cmd/server/main.go -transport=http -port=8081 -log-http-payloads
 LOG_HTTP_PAYLOADS=true LOG_HTTP_PAYLOAD_MAX_BYTES=1048576 go run ./cmd/server/main.go -transport=http -port=8081
 ```
 
+HTTP/SSE 模式提供免认证运维探针：`/health` 为存活检查，进程可响应时返回 `200`；`/ready` 为就绪检查，工具与认证器初始化完成时返回 `200`，否则返回 `503`。
+
 - `LOG_HTTP_PAYLOADS`：是否记录所有 HTTP 请求 Body 与响应结果，默认 `false`。
 - `LOG_HTTP_PAYLOAD_MAX_BYTES`：单个请求或响应最多记录的字节数，默认 1 MiB；设为 `0` 表示完整记录且不截断。
 - 对应命令行参数为 `-log-http-payloads` 与 `-log-http-payload-max-bytes`，命令行参数优先。
@@ -52,6 +54,8 @@ HTTP MCP POST 请求体最大为 4 MiB；超过该限制会返回 HTTP 413。远
 ### Authentication configuration (English)
 
 `xktmcp` provides student, staff, RAG, and Wiki MCP tools over stdio, SSE, and Streamable HTTP. The `-debug` flag is not supported; use `-log-http-payloads` or the equivalent environment variables for controlled payload diagnostics.
+
+HTTP/SSE transports expose unauthenticated operational probes: `/health` is the liveness check and returns `200` when the process responds; `/ready` is the readiness check and returns `200` after tools and authentication initialize, otherwise `503`.
 
 Configure tenant-specific Bearer tokens with `AUTH_TENANTS`. Prefer storing a SHA-256 hexadecimal token digest rather than a plaintext token:
 
