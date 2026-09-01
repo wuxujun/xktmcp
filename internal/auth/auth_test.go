@@ -560,6 +560,31 @@ func TestTenantPayloadAndPrincipalPolicy(t *testing.T) {
 	}
 }
 
+func TestRemotePrincipalRejectsRoutedURLUserConflict(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"userid":"user-a"}`))
+	}))
+	defer backend.Close()
+
+	host := strings.TrimPrefix(backend.URL, "http://")
+	a := mustAuthenticator(t, Config{
+		RemoteVerifyURL: backend.URL,
+		AllowedHosts:    []string{host},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/mcp?userId=user-b", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"wiki_search","arguments":{}}}`))
+	req.Header.Set("Authorization", "Bearer remote-secret")
+	req = req.WithContext(trace.WithUserID(req.Context(), req.URL.Query().Get("userId")))
+	called := false
+	rr := httptest.NewRecorder()
+	a.Middleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		called = true
+	})).ServeHTTP(rr, req)
+	if rr.Code != http.StatusForbidden || called {
+		t.Fatalf("status=%d called=%t, want 403 false", rr.Code, called)
+	}
+}
+
 func TestTenantWithoutPrincipalPreservesPayloadBytes(t *testing.T) {
 	a := mustAuthenticator(t, Config{Tenants: []TenantConfig{{
 		Name: "tenant-a", Token: "secret", AllowedTools: []string{"wiki_search"},

@@ -335,7 +335,7 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 				ctx := r.Context()
 				if userID != "" {
 					ctx = context.WithValue(ctx, ctxKeyUserID, userID)
-					ctx = trace.WithUserID(ctx, userID)
+					ctx = trace.WithAuthenticatedUserID(ctx, userID)
 					// 把 sessionID→userID 存入 map，供 MCPMiddleware 在 MCP 消息层补注。
 					// MCP-Session-Id 头由 SDK 在 /mcp 的响应里下发，首次 POST
 					// 时客户端会回传该头，从而可在此取到。
