@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/wuxujun/xktmcp/internal/auth"
 	"github.com/wuxujun/xktmcp/internal/logger"
 	"github.com/wuxujun/xktmcp/internal/trace"
 )
@@ -277,6 +278,45 @@ func TestRequestLoggingMiddlewareLogsPayloadsWithoutTruncatingRequest(t *testing
 		if !strings.Contains(output, expected) {
 			t.Fatalf("log output missing %s:\n%s", expected, output)
 		}
+	}
+}
+
+type countingReadCloser struct {
+	io.Reader
+	bytesRead int64
+}
+
+func (r *countingReadCloser) Read(p []byte) (int, error) {
+	n, err := r.Reader.Read(p)
+	r.bytesRead += int64(n)
+	return n, err
+}
+
+func (*countingReadCloser) Close() error { return nil }
+
+func TestRequestLoggingMiddlewareBoundsZeroLimitPOSTBeforeAuth(t *testing.T) {
+	logger.Init(io.Discard)
+	source := &countingReadCloser{Reader: strings.NewReader(strings.Repeat("x", protocolDetectionMaxBytes+4096))}
+	req := httptest.NewRequest(http.MethodPost, "/mcp", source)
+	req.Header.Set("Authorization", "Bearer secret")
+
+	authenticator, err := auth.New(auth.Config{LocalToken: "secret"})
+	if err != nil {
+		t.Fatalf("new authenticator: %v", err)
+	}
+	called := false
+	handler := requestLoggingMiddleware(authenticator.Middleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		called = true
+	})), httpPayloadLogConfig{Enabled: true, MaxBytes: 0})
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusRequestEntityTooLarge || called {
+		t.Fatalf("status=%d called=%t, want 413 false", recorder.Code, called)
+	}
+	if source.bytesRead != protocolDetectionMaxBytes+1 {
+		t.Fatalf("source bytes read=%d, want auth boundary sentinel=%d", source.bytesRead, protocolDetectionMaxBytes+1)
 	}
 }
 

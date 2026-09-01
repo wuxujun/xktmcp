@@ -47,6 +47,29 @@ LOG_HTTP_PAYLOADS=true LOG_HTTP_PAYLOAD_MAX_BYTES=1048576 go run ./cmd/server/ma
 
 HTTP MCP POST 请求体最大为 4 MiB；超过该限制会返回 HTTP 413。远程 Token 验证缓存通过 `AUTH_REMOTE_CACHE_MAX_ENTRIES` 配置，默认最多 4096 条；该值必须为正整数。
 
+### Authentication configuration (English)
+
+Configure tenant-specific Bearer tokens with `AUTH_TENANTS`. Prefer storing a SHA-256 hexadecimal token digest rather than a plaintext token:
+
+```json
+[
+  {
+    "name": "wiki-user-a",
+    "token_hash": "<64-character-sha256-hex>",
+    "user_id": "user-a",
+    "allowed_tools": ["wiki_search", "wiki_get_page"],
+    "rate_rps": 5,
+    "rate_burst": 10
+  }
+]
+```
+
+The optional tenant `user_id` is a trusted authenticated principal. A `userid` returned by remote token verification is also a trusted principal. When a trusted principal exists, the request `userId` must match it; a missing `userId` is injected from the trusted principal, and a conflict returns HTTP 403.
+
+The `userId` used with a shared `AUTH_TOKEN`, IP allowlist, or stdio transport is routing metadata only, not an authenticated user identity. Do not use it for authorization or as a security boundary.
+
+HTTP MCP POST bodies are limited to 4 MiB; larger bodies receive HTTP 413. Configure the remote-token verification cache with `AUTH_REMOTE_CACHE_MAX_ENTRIES`; it defaults to 4096 entries and must be a positive integer.
+
 Streamable HTTP 会按 MCP 协议版本选择传输方式：`2025-11-25` 及更早版本使用有状态会话并返回 `application/json`，`2026-07-28` 使用无会话模式并返回 `text/event-stream`。客户端请求仍需声明 `Accept: application/json, text/event-stream`；legacy 客户端应通过 `initialize` 协商版本，并在后续请求携带响应中的 `Mcp-Session-Id` 和 `Mcp-Protocol-Version`。
 
 ```bash

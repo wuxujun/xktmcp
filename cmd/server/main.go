@@ -424,11 +424,20 @@ func requestLoggingMiddleware(next http.Handler, config httpPayloadLogConfig) ht
 		if config.Enabled && r.Body != nil && r.Body != http.NoBody {
 			originalBody := r.Body
 			reader := io.Reader(originalBody)
-			if config.MaxBytes > 0 {
-				reader = io.LimitReader(originalBody, config.MaxBytes+1)
+			captureMaxBytes := config.MaxBytes
+			readMaxBytes := config.MaxBytes
+			// Authentication rejects HTTP MCP POST payloads beyond this boundary. Do
+			// not let the outer logger consume more than it before Auth runs, even
+			// when zero would otherwise mean unlimited payload logging.
+			if r.Method == http.MethodPost && (readMaxBytes == 0 || readMaxBytes > protocolDetectionMaxBytes) {
+				readMaxBytes = protocolDetectionMaxBytes
+				captureMaxBytes = protocolDetectionMaxBytes
+			}
+			if readMaxBytes > 0 {
+				reader = io.LimitReader(originalBody, readMaxBytes+1)
 			}
 			prefix, readErr := io.ReadAll(reader)
-			capture := newLimitedBodyCapture(config.MaxBytes)
+			capture := newLimitedBodyCapture(captureMaxBytes)
 			_, _ = capture.Write(prefix)
 			r.Body = &replayReadCloser{
 				Reader: io.MultiReader(bytes.NewReader(prefix), originalBody),
