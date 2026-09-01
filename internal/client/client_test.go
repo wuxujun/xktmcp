@@ -10,6 +10,33 @@ import (
 	"testing"
 )
 
+type trackingBody struct {
+	data   []byte
+	reads  int32
+	closed int32
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+func (b *trackingBody) Read(p []byte) (int, error) {
+	atomic.AddInt32(&b.reads, 1)
+	if len(b.data) == 0 {
+		return 0, io.EOF
+	}
+	n := copy(p, b.data)
+	b.data = b.data[n:]
+	return n, nil
+}
+
+func (b *trackingBody) Close() error {
+	atomic.StoreInt32(&b.closed, 1)
+	return nil
+}
+
 func TestReadErrorDetails(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -69,6 +96,28 @@ func TestReadErrorDetails(t *testing.T) {
 }
 
 func TestDoRequestWithRetry(t *testing.T) {
+	t.Run("drains transient response before close", func(t *testing.T) {
+		first := &trackingBody{data: []byte("transient response")}
+		attempts := 0
+		transport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			attempts++
+			if attempts == 1 {
+				return &http.Response{StatusCode: http.StatusInternalServerError, Body: first, Request: req}, nil
+			}
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("ok")), Request: req}, nil
+		})
+		client := &http.Client{Transport: transport}
+		req, _ := http.NewRequest(http.MethodGet, "http://example.test", nil)
+		resp, err := doRequestWithRetry(context.Background(), client, req, "TestAPI", nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		defer resp.Body.Close()
+		if atomic.LoadInt32(&first.reads) == 0 || atomic.LoadInt32(&first.closed) == 0 {
+			t.Fatalf("transient body reads=%d closed=%d, want drained and closed", first.reads, first.closed)
+		}
+	})
+
 	// 隔离:重置共享熔断器,避免本测试的失败累计影响其它测试(反之亦然)。
 	upstreamBreaker.reset()
 	defer upstreamBreaker.reset()

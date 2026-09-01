@@ -48,6 +48,7 @@ func isCallerCanceled(err error) bool {
 
 // doRequestWithRetryInner executes an HTTP request with exponential backoff retries for 5xx and network errors.
 func doRequestWithRetryInner(ctx context.Context, httpClient *http.Client, req *http.Request, apiName string) (*http.Response, error) {
+	const transientResponseDrainLimit = 64 << 10
 	var resp *http.Response
 	var err error
 	maxAttempts := 3
@@ -83,6 +84,7 @@ func doRequestWithRetryInner(ctx context.Context, httpClient *http.Client, req *
 			// If it's a server-side transient error, retry.
 			if retryableRequest(req) && resp.StatusCode >= 500 && resp.StatusCode <= 599 {
 				logger.APIfCtx(ctx, apiName, "尝试 %d 失败，服务侧状态码: %d", attempt, resp.StatusCode)
+				_, _ = io.CopyN(io.Discard, resp.Body, transientResponseDrainLimit)
 				resp.Body.Close()
 				err = fmt.Errorf("server error: status=%d", resp.StatusCode)
 				continue
