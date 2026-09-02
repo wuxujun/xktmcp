@@ -47,6 +47,31 @@ func TestReadinessHandler(t *testing.T) {
 	}
 }
 
+func TestEnvironmentParsingHelpers(t *testing.T) {
+	for _, raw := range []string{"1", "true", "YES", "on"} {
+		t.Setenv("TEST_BOOL", raw)
+		if !envBool("TEST_BOOL") {
+			t.Errorf("envBool(%q)=false", raw)
+		}
+	}
+	t.Setenv("TEST_BOOL", "off")
+	if envBool("TEST_BOOL") {
+		t.Error("envBool(off)=true")
+	}
+	t.Setenv("TEST_POSITIVE", "7")
+	if got, err := envPositiveInt("TEST_POSITIVE", 2); err != nil || got != 7 {
+		t.Fatalf("positive=%d err=%v", got, err)
+	}
+	t.Setenv("TEST_POSITIVE", "bad")
+	if _, err := envPositiveInt("TEST_POSITIVE", 2); err == nil {
+		t.Fatal("invalid positive integer accepted")
+	}
+	t.Setenv("TEST_INT", "bad")
+	if got := envInt64("TEST_INT", 9); got != 9 {
+		t.Fatalf("fallback=%d", got)
+	}
+}
+
 func TestResponseRecorderCapturesAndUnwraps(t *testing.T) {
 	base := httptest.NewRecorder()
 	rec := &responseRecorder{ResponseWriter: base, bodyCapture: newLimitedBodyCapture(3)}
