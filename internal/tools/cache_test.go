@@ -31,6 +31,25 @@ func TestMemoryCache_GetSet(t *testing.T) {
 	}
 }
 
+func TestMemoryCache_DeleteOperations(t *testing.T) {
+	c := NewMemoryCacheWithOptions(10, 0)
+	defer c.Stop()
+	c.Set("rag:a", 1, 0)
+	c.Set("rag:b", 2, 0)
+	c.Set("wiki:a", 3, 0)
+	c.Delete("rag:a")
+	if _, ok := c.Get("rag:a"); ok {
+		t.Fatal("deleted key still present")
+	}
+	c.DeletePrefix("rag:")
+	if _, ok := c.Get("rag:b"); ok {
+		t.Fatal("prefix-deleted key still present")
+	}
+	if _, ok := c.Get("wiki:a"); !ok {
+		t.Fatal("unmatched prefix key was deleted")
+	}
+}
+
 // 更新已存在的 key:值被覆盖,且不新增条目。
 func TestMemoryCache_Update(t *testing.T) {
 	cache := NewMemoryCacheWithOptions(10, 0) // 无 janitor,确定性
