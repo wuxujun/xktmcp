@@ -41,12 +41,16 @@ type wikiBacklinksResponse struct {
 	Data []model.WikiBacklink `json:"data"`
 }
 
-func NewWikiAPI(cfg Config) *WikiAPI {
+func NewWikiAPI(cfg Config, breakers ...*CircuitBreaker) *WikiAPI {
+	breaker := wikiBreaker
+	if len(breakers) > 0 && breakers[0] != nil {
+		breaker = breakers[0]
+	}
 	return &WikiAPI{
 		baseURL:  cfg.BaseURL,
 		apiToken: cfg.APIToken,
 		client:   newAPIHTTPClient(cfg.Timeout),
-		breaker:  wikiBreaker,
+		breaker:  breaker,
 	}
 }
 

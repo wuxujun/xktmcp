@@ -23,12 +23,16 @@ type ragSearchResponse struct {
 	Data []model.Rag `json:"data"`
 }
 
-func NewRagAPI(cfg Config) *RagAPI {
+func NewRagAPI(cfg Config, breakers ...*CircuitBreaker) *RagAPI {
+	breaker := ragBreaker
+	if len(breakers) > 0 && breakers[0] != nil {
+		breaker = breakers[0]
+	}
 	return &RagAPI{
 		baseURL:  cfg.BaseURL,
 		apiToken: cfg.APIToken,
 		client:   newAPIHTTPClient(cfg.Timeout),
-		breaker:  ragBreaker,
+		breaker:  breaker,
 	}
 }
 

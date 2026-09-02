@@ -23,12 +23,16 @@ type staffSearchResponse struct {
 	Data []model.Staff `json:"data"`
 }
 
-func NewStaffAPI(cfg Config) *StaffAPI {
+func NewStaffAPI(cfg Config, breakers ...*CircuitBreaker) *StaffAPI {
+	breaker := staffBreaker
+	if len(breakers) > 0 && breakers[0] != nil {
+		breaker = breakers[0]
+	}
 	return &StaffAPI{
 		baseURL:  cfg.BaseURL,
 		apiToken: cfg.APIToken,
 		client:   newAPIHTTPClient(cfg.Timeout),
-		breaker:  staffBreaker,
+		breaker:  breaker,
 	}
 }
 

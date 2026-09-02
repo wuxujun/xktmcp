@@ -51,6 +51,8 @@ HTTP MCP POST 请求体最大为 4 MiB；超过该限制会返回 HTTP 413。远
 
 可通过 `MCP_ENABLED_TOOLS` 使用逗号分隔的工具白名单限制注册范围；未设置时注册全部工具，未知工具名会导致启动失败。
 
+熔断策略可通过 `UPSTREAM_CB_FAILURE_THRESHOLD`、`UPSTREAM_CB_COOLDOWN_SECONDS`、`UPSTREAM_CB_HALF_OPEN_PROBES` 配置，默认分别为 `5`、`10`、`1`；必须为正整数。
+
 ### Authentication configuration (English)
 
 `xktmcp` provides student, staff, RAG, and Wiki MCP tools over stdio, SSE, and Streamable HTTP. The `-debug` flag is not supported; use `-log-http-payloads` or the equivalent environment variables for controlled payload diagnostics.
@@ -79,6 +81,8 @@ The `userId` used with a shared `AUTH_TOKEN`, IP allowlist, or stdio transport i
 HTTP MCP POST bodies are limited to 4 MiB; larger bodies receive HTTP 413. Configure the remote-token verification cache with `AUTH_REMOTE_CACHE_MAX_ENTRIES`; it defaults to 4096 entries and must be a positive integer.
 
 Use `MCP_ENABLED_TOOLS` with a comma-separated allowlist to limit which MCP tools are registered. When unset, all tools are registered; an unknown tool name fails startup.
+
+Configure the circuit-breaker policy with `UPSTREAM_CB_FAILURE_THRESHOLD`, `UPSTREAM_CB_COOLDOWN_SECONDS`, and `UPSTREAM_CB_HALF_OPEN_PROBES`. Defaults are `5`, `10`, and `1`; every value must be a positive integer.
 
 Streamable HTTP 会按 MCP 协议版本选择传输方式：`2025-11-25` 及更早版本使用有状态会话并返回 `application/json`，`2026-07-28` 使用无会话模式并返回 `text/event-stream`。客户端请求仍需声明 `Accept: application/json, text/event-stream`；legacy 客户端应通过 `initialize` 协商版本，并在后续请求携带响应中的 `Mcp-Session-Id` 和 `Mcp-Protocol-Version`。
 

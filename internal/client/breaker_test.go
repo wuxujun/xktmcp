@@ -10,8 +10,8 @@ import (
 // fakeClock 是可手动推进的测试时钟。
 type fakeClock struct{ t time.Time }
 
-func (f *fakeClock) now() time.Time            { return f.t }
-func (f *fakeClock) advance(d time.Duration)   { f.t = f.t.Add(d) }
+func (f *fakeClock) now() time.Time          { return f.t }
+func (f *fakeClock) advance(d time.Duration) { f.t = f.t.Add(d) }
 
 // newTestBreaker 构造一个挂了假时钟的熔断器。
 func newTestBreaker(threshold int, cooldown time.Duration, probes int) (*CircuitBreaker, *fakeClock) {
@@ -164,6 +164,30 @@ func TestCircuitBreaker_NilSafe(t *testing.T) {
 	}
 	cb.RecordFailure() // 不应 panic
 	cb.RecordSuccess() // 不应 panic
+}
+
+func TestLoadCircuitBreakerSetFromEnv(t *testing.T) {
+	t.Setenv("UPSTREAM_CB_FAILURE_THRESHOLD", "7")
+	t.Setenv("UPSTREAM_CB_COOLDOWN_SECONDS", "12")
+	t.Setenv("UPSTREAM_CB_HALF_OPEN_PROBES", "2")
+	set, err := LoadCircuitBreakerSetFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, cb := range map[string]*CircuitBreaker{
+		"student": set.Student, "rag": set.RAG, "staff": set.Staff, "wiki": set.Wiki,
+	} {
+		if cb.failureThreshold != 7 || cb.cooldown != 12*time.Second || cb.halfOpenProbes != 2 {
+			t.Fatalf("%s policy=%+v", name, cb)
+		}
+	}
+}
+
+func TestLoadCircuitBreakerSetRejectsInvalidEnv(t *testing.T) {
+	t.Setenv("UPSTREAM_CB_FAILURE_THRESHOLD", "0")
+	if _, err := LoadCircuitBreakerSetFromEnv(); err == nil {
+		t.Fatal("zero threshold was accepted")
+	}
 }
 
 // isCallerCanceled 只把主动取消(Canceled)判为中性;超时(DeadlineExceeded)应计为失败。

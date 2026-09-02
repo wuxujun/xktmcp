@@ -2,6 +2,10 @@ package client
 
 import (
 	"errors"
+	"fmt"
+	"os"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -226,3 +230,45 @@ var (
 	wikiBreaker    = NewCircuitBreaker("wiki", defaultFailureThreshold, defaultCooldown, defaultHalfOpenProbes)
 )
 
+type CircuitBreakerSet struct {
+	Upstream *CircuitBreaker
+	Student  *CircuitBreaker
+	RAG      *CircuitBreaker
+	Staff    *CircuitBreaker
+	Wiki     *CircuitBreaker
+}
+
+func LoadCircuitBreakerSetFromEnv() (*CircuitBreakerSet, error) {
+	threshold, err := positiveEnvInt("UPSTREAM_CB_FAILURE_THRESHOLD", defaultFailureThreshold)
+	if err != nil {
+		return nil, err
+	}
+	cooldownSeconds, err := positiveEnvInt("UPSTREAM_CB_COOLDOWN_SECONDS", int(defaultCooldown/time.Second))
+	if err != nil {
+		return nil, err
+	}
+	probes, err := positiveEnvInt("UPSTREAM_CB_HALF_OPEN_PROBES", defaultHalfOpenProbes)
+	if err != nil {
+		return nil, err
+	}
+	cooldown := time.Duration(cooldownSeconds) * time.Second
+	return &CircuitBreakerSet{
+		Upstream: NewCircuitBreaker("upstream", threshold, cooldown, probes),
+		Student:  NewCircuitBreaker("student", threshold, cooldown, probes),
+		RAG:      NewCircuitBreaker("rag", threshold, cooldown, probes),
+		Staff:    NewCircuitBreaker("staff", threshold, cooldown, probes),
+		Wiki:     NewCircuitBreaker("wiki", threshold, cooldown, probes),
+	}, nil
+}
+
+func positiveEnvInt(key string, fallback int) (int, error) {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback, nil
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value <= 0 {
+		return 0, fmt.Errorf("%s must be a positive integer", key)
+	}
+	return value, nil
+}

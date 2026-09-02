@@ -72,12 +72,16 @@ func LoadConfigFromEnv() (Config, error) {
 	}, nil
 }
 
-func NewStudentAPI(cfg Config) *StudentAPI {
+func NewStudentAPI(cfg Config, breakers ...*CircuitBreaker) *StudentAPI {
+	breaker := studentBreaker
+	if len(breakers) > 0 && breakers[0] != nil {
+		breaker = breakers[0]
+	}
 	return &StudentAPI{
 		baseURL:  cfg.BaseURL,
 		apiToken: cfg.APIToken,
 		client:   &http.Client{Timeout: cfg.Timeout},
-		breaker:  studentBreaker,
+		breaker:  breaker,
 	}
 }
 

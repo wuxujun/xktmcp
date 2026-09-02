@@ -37,6 +37,10 @@ func RegisterAll(s *mcp.Server, wikiConfigPaths ...string) error {
 		return err
 	}
 	prompts.RegisterAll(s, enabledTools)
+	breakerSet, err := client.LoadCircuitBreakerSetFromEnv()
+	if err != nil {
+		return err
+	}
 
 	wikiConfigPath := "config/wiki.json"
 	if len(wikiConfigPaths) > 0 && wikiConfigPaths[0] != "" {
@@ -49,7 +53,7 @@ func RegisterAll(s *mcp.Server, wikiConfigPaths ...string) error {
 
 	// 本地 Wiki 是独立部署模式，不应要求上游 API 配置，也不注册依赖上游的工具。
 	if wikiConfig.Mode == wikibackend.ModeLocal {
-		return registerWikiTools(s, client.Config{}, wikiConfig, enabledTools)
+		return registerWikiTools(s, client.Config{}, wikiConfig, enabledTools, breakerSet.Wiki)
 	}
 
 	baseCfg, err := client.LoadConfigFromEnv()
@@ -57,7 +61,7 @@ func RegisterAll(s *mcp.Server, wikiConfigPaths ...string) error {
 		return err
 	}
 
-	studentAPI := client.NewStudentAPI(baseCfg)
+	studentAPI := client.NewStudentAPI(baseCfg, breakerSet.Student)
 	studentSvc := service.NewStudentService(studentAPI)
 	if toolEnabled(enabledTools, "student_search") {
 		addTool(s, tools.StudentSearchTool(), tools.StudentSearchHandler(studentSvc))
@@ -72,23 +76,23 @@ func RegisterAll(s *mcp.Server, wikiConfigPaths ...string) error {
 		addTool(s, tools.StudentGetTool(), tools.StudentGetHandler(studentSvc))
 	}
 
-	ragAPI := client.NewRagAPI(baseCfg)
+	ragAPI := client.NewRagAPI(baseCfg, breakerSet.RAG)
 	ragSvc := service.NewRagService(ragAPI)
 	if toolEnabled(enabledTools, "rag_search") {
 		addTool(s, tools.RagSearchTool(), tools.RagSearchHandler(ragSvc))
 	}
 
-	staffAPI := client.NewStaffAPI(baseCfg)
+	staffAPI := client.NewStaffAPI(baseCfg, breakerSet.Staff)
 	staffSvc := service.NewStaffService(staffAPI)
 	if toolEnabled(enabledTools, "staff_search") {
 		addTool(s, tools.StaffSearchTool(), tools.StaffSearchHandler(staffSvc))
 	}
 
-	return registerWikiTools(s, baseCfg, wikiConfig, enabledTools)
+	return registerWikiTools(s, baseCfg, wikiConfig, enabledTools, breakerSet.Wiki)
 }
 
-func registerWikiTools(s *mcp.Server, baseCfg client.Config, wikiConfig wikibackend.Config, enabledTools map[string]bool) error {
-	wikiAPI := client.NewWikiAPI(baseCfg)
+func registerWikiTools(s *mcp.Server, baseCfg client.Config, wikiConfig wikibackend.Config, enabledTools map[string]bool, breaker *client.CircuitBreaker) error {
+	wikiAPI := client.NewWikiAPI(baseCfg, breaker)
 	var wikiBackend service.WikiBackend = wikiAPI
 	if wikiConfig.Mode == wikibackend.ModeLocal {
 		localSearcher, err := wikibackend.NewLocalRouter(wikiConfig.Local)
