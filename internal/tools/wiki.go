@@ -289,8 +289,7 @@ func WikiUpsertPageHandler(
 			}, nil, nil
 		}
 
-		// 写入会影响页面、搜索、目录树与反向链接，统一失效 Wiki 缓存命名空间。
-		wikiCache.DeletePrefix("wiki:")
+		invalidateWikiCache(userID)
 
 		text, redacted := pii.RedactJSON(result)
 		res := &mcp.CallToolResult{
@@ -299,6 +298,17 @@ func WikiUpsertPageHandler(
 			},
 		}
 		return res, redacted, nil
+	}
+}
+
+func invalidateWikiCache(userID string) {
+	if userID == "" {
+		wikiCache.DeletePrefix("wiki:")
+		return
+	}
+
+	for _, operation := range []string{"search", "page", "tree", "backlinks"} {
+		wikiCache.DeletePrefix(fmt.Sprintf("wiki:%s:%s:", operation, userID))
 	}
 }
 

@@ -115,6 +115,101 @@ func TestWikiUpsertPageHandler(t *testing.T) {
 	}
 }
 
+func TestWikiUpsertPageHandlerInvalidatesOnlyEffectiveUserCache(t *testing.T) {
+	ts, svc := setupWikiToolsTest(t)
+	defer ts.Close()
+
+	oldCache := wikiCache
+	wikiCache = NewMemoryCacheWithOptions(32, 0)
+	t.Cleanup(func() {
+		wikiCache.Stop()
+		wikiCache = oldCache
+	})
+
+	userAKeys := []string{
+		"wiki:search:user-a:query::5",
+		"wiki:page:user-a:p1:",
+		"wiki:tree:user-a::3",
+		"wiki:backlinks:user-a:p1",
+	}
+	userBKeys := []string{
+		"wiki:search:user-b:query::5",
+		"wiki:page:user-b:p1:",
+		"wiki:tree:user-b::3",
+		"wiki:backlinks:user-b:p1",
+	}
+	for _, key := range append(userAKeys, userBKeys...) {
+		wikiCache.Set(key, key, time.Minute)
+	}
+
+	handler := WikiUpsertPageHandler(svc)
+	res, _, err := handler(context.Background(), nil, WikiUpsertPageArgs{
+		CommonArgs: CommonArgs{UserID: "user-a"},
+		Title:      "New Doc",
+		Content:    "Markdown Content",
+		Mode:       "create",
+	})
+	if err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+	if res == nil || res.IsError {
+		t.Fatalf("unexpected tool result: %+v", res)
+	}
+
+	for _, key := range userAKeys {
+		if _, ok := wikiCache.Get(key); ok {
+			t.Errorf("expected cache key %q to be invalidated", key)
+		}
+	}
+	for _, key := range userBKeys {
+		if _, ok := wikiCache.Get(key); !ok {
+			t.Errorf("expected other user's cache key %q to remain", key)
+		}
+	}
+}
+
+func TestWikiUpsertPageHandlerWithoutUserInvalidatesAllWikiCache(t *testing.T) {
+	ts, svc := setupWikiToolsTest(t)
+	defer ts.Close()
+
+	oldCache := wikiCache
+	wikiCache = NewMemoryCacheWithOptions(16, 0)
+	t.Cleanup(func() {
+		wikiCache.Stop()
+		wikiCache = oldCache
+	})
+
+	for _, key := range []string{
+		"wiki:search:user-a:query::5",
+		"wiki:page:user-b:p1:",
+		"wiki:tree:user-c::3",
+		"wiki:backlinks:user-d:p1",
+	} {
+		wikiCache.Set(key, key, time.Minute)
+	}
+	wikiCache.Set("student:query:user-a", "student", time.Minute)
+
+	handler := WikiUpsertPageHandler(svc)
+	res, _, err := handler(context.Background(), nil, WikiUpsertPageArgs{
+		Title:   "New Doc",
+		Content: "Markdown Content",
+		Mode:    "create",
+	})
+	if err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+	if res == nil || res.IsError {
+		t.Fatalf("unexpected tool result: %+v", res)
+	}
+
+	if got := wikiCache.Len(); got != 1 {
+		t.Fatalf("expected only non-Wiki cache entry to remain, got %d entries", got)
+	}
+	if _, ok := wikiCache.Get("student:query:user-a"); !ok {
+		t.Fatal("expected non-Wiki cache entry to remain")
+	}
+}
+
 func TestWikiListTreeHandler(t *testing.T) {
 	ts, svc := setupWikiToolsTest(t)
 	defer ts.Close()

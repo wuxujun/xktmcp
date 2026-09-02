@@ -33,7 +33,7 @@ LLM-Wiki 模块已完成 **双后端架构**（HTTP 远程 + 本地 Markdown）�
 | `wiki_search` | 知识库全文检索 | 2min ✅ | ✅ | ✅ |
 | `wiki_get_page` | 获取词条详情 | 5min ✅ | ✅ | ✅ |
 | `wiki_list_tree` | 目录树浏览 | 10min ✅ | ✅ | ✅ |
-| `wiki_upsert_page` | 创建/更新词条 | 写后清除 ✅ | ✅ | ✅ |
+| `wiki_upsert_page` | 创建/更新词条 | 按用户写后失效 ✅ | ✅ | ✅ |
 | `wiki_get_backlinks` | 反向引用查询 | 本地预计算索引 ✅ / HTTP 无工具缓存 | ✅ | ✅ |
 
 ### 双后端架构 — 全部就绪 ✅
@@ -83,10 +83,10 @@ ok   github.com/wuxujun/xktmcp/internal/server    (cached)
 
 ### 🔴 高优先级
 
-#### 1. Upsert 缓存清除范围过大
-- **现状**：`WikiUpsertPageHandler` 成功后调用 `wikiCache.DeletePrefix("wiki:")`，清除所有用户的 Wiki 工具缓存。
-- **影响**：功能正确，但用户 A 写入会降低用户 B 的缓存命中率；只有多租户高频写入时影响明显。
-- **建议**：改为按当前 `userID` 精细失效页面、搜索、目录树和反向链接缓存。
+#### 1. Upsert 按用户精细化缓存失效（已完成）
+- **现状**：`WikiUpsertPageHandler` 成功后按有效 `userID` 清理当前用户的页面、搜索、目录树和反向链接缓存，不再影响其他用户。
+- **兼容回退**：无法取得用户标识时仍清理整个 `wiki:` 命名空间，避免产生无法归属的陈旧缓存。
+- **验证**：已增加多用户隔离回归测试，覆盖“用户 A 写入不清除用户 B 缓存”和空用户全局回退。
 
 #### 2. 并发写入版本冲突控制
 - **现状**：本地写入已经通过临时文件、`Sync` 和 `os.Rename` 原子替换，不会产生半文件；但多个写入者基于同一旧版本更新时仍可能后写覆盖先写。
@@ -144,7 +144,7 @@ ok   github.com/wuxujun/xktmcp/internal/server    (cached)
 | **安全合规** | ⭐⭐⭐⭐⭐ | PII 脱敏贯穿入/出参、路径遍历防护、写入目录约束 |
 | **可观测性** | ⭐⭐⭐⭐⭐ | Trace ID 贯穿、Prometheus 指标、审计日志 |
 | **测试覆盖** | ⭐⭐⭐⭐ | 覆盖全面但 model 层无测试 |
-| **缓存策略** | ⭐⭐⭐⭐ | 差异化 TTL + 写后失效，但 backlinks 和清除粒度可优化 |
+| **缓存策略** | ⭐⭐⭐⭐⭐ | 差异化 TTL + 按用户写后失效；HTTP backlinks 缓存按指标选配 |
 | **检索精度** | ⭐⭐⭐ | TF-IDF 足用，中文场景精度可提升 |
 
 ---
@@ -153,8 +153,7 @@ ok   github.com/wuxujun/xktmcp/internal/server    (cached)
 
 | 序号 | 优化项 | 预估工作量 | 优先级 |
 |:---:|:---|:---:|:---:|
-| 1 | Upsert 按用户精细化缓存失效 | 0.5h | 🔴（多租户高频写入时） |
-| 2 | 增加 `expected_version`/ETag 乐观锁 | 1-2h | 🔴（存在并发写入时） |
-| 3 | 基于指标决定 HTTP Backlinks 短 TTL 缓存 | 0.5h | 🟡 |
-| 4 | 使用真实查询集评估中文检索，再决定分词优化 | 2-4h | 🟡 |
-| 5 | model 层 JSON 回归测试 | 0.5h | 🟢 |
+| 1 | 增加 `expected_version`/ETag 乐观锁 | 1-2h | 🔴（存在并发写入时） |
+| 2 | 基于指标决定 HTTP Backlinks 短 TTL 缓存 | 0.5h | 🟡 |
+| 3 | 使用真实查询集评估中文检索，再决定分词优化 | 2-4h | 🟡 |
+| 4 | model 层 JSON 回归测试 | 0.5h | 🟢 |
