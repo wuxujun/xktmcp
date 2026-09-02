@@ -102,3 +102,19 @@ func (r *LocalRouter) GetBacklinks(ctx context.Context, userID, pageID string) (
 	}
 	return searcher.GetBacklinks(ctx, userID, pageID)
 }
+
+func (r *LocalRouter) ListResources(ctx context.Context, userID string, limit int) (ResourceCatalog, error) {
+	searcher, err := r.searcher(userID)
+	if err != nil {
+		return ResourceCatalog{}, err
+	}
+	return searcher.ListResources(ctx, limit)
+}
+
+func (r *LocalRouter) ReadPageResource(ctx context.Context, userID, uri string) (string, error) {
+	searcher, err := r.searcher(userID)
+	if err != nil {
+		return "", err
+	}
+	return searcher.ReadPageResource(ctx, uri)
+}

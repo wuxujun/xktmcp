@@ -53,6 +53,55 @@ func TestLocalRouterFallsBackToDefault(t *testing.T) {
 	}
 }
 
+func TestLocalRouterIsolatesResources(t *testing.T) {
+	defaultRoot := createRouterWikiWithPageID(t, "default", "公共手册", "公共内容 130****0000")
+	userARoot := createRouterWikiWithPageID(t, "user-a", "甲手册", "甲内容 138****5678")
+	userBRoot := createRouterWikiWithPageID(t, "user-b", "乙手册", "乙内容 139****5678")
+	router, err := NewLocalRouter(LocalConfig{
+		Root: defaultRoot,
+		Users: map[string]LocalConfig{
+			"user-a": {Root: userARoot},
+			"user-b": {Root: userBRoot},
+		},
+		RequireUserMapping: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalogA, err := router.ListResources(context.Background(), "user-a", 10)
+	if err != nil || len(catalogA.Items) != 1 || catalogA.Items[0].Name != "甲手册" {
+		t.Fatalf("catalog=%+v err=%v", catalogA, err)
+	}
+	uri := catalogA.Items[0].URI
+	pageA, err := router.ReadPageResource(context.Background(), "user-a", uri)
+	if err != nil || pageA != "甲内容 138****5678" {
+		t.Fatalf("pageA=%q err=%v", pageA, err)
+	}
+	pageB, err := router.ReadPageResource(context.Background(), "user-b", uri)
+	if err != nil || pageB != "乙内容 139****5678" {
+		t.Fatalf("pageB=%q err=%v", pageB, err)
+	}
+	if _, err := router.ListResources(context.Background(), "unknown", 10); !errors.Is(err, ErrUserWikiNotConfigured) {
+		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestLocalRouterResourcesFallBackToDefault(t *testing.T) {
+	defaultRoot := createRouterWikiWithPageID(t, "default", "公共手册", "公共内容 130****0000")
+	router, err := NewLocalRouter(LocalConfig{Root: defaultRoot, RequireUserMapping: false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := router.ListResources(context.Background(), "unknown", 10)
+	if err != nil || len(catalog.Items) != 1 || catalog.Items[0].Name != "公共手册" {
+		t.Fatalf("catalog=%+v err=%v", catalog, err)
+	}
+	page, err := router.ReadPageResource(context.Background(), "unknown", catalog.Items[0].URI)
+	if err != nil || page != "公共内容 130****0000" {
+		t.Fatalf("page=%q err=%v", page, err)
+	}
+}
+
 func TestLocalRouterIsolatesUserBacklinks(t *testing.T) {
 	userARoot := createBacklinkRouterWiki(t, "user-a", "甲来源", "甲目标", "甲内容")
 	userBRoot := createBacklinkRouterWiki(t, "user-b", "乙来源", "乙目标", "乙内容")
@@ -110,6 +159,19 @@ func createRouterWiki(t *testing.T, name, title, content string) string {
 		t.Fatal(err)
 	}
 	article := "---\ntitle: " + title + "\n---\n\n" + content + "\n"
+	if err := os.WriteFile(filepath.Join(root, "wiki", "article.md"), []byte(article), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
+func createRouterWikiWithPageID(t *testing.T, name, title, content string) string {
+	t.Helper()
+	root := filepath.Join(t.TempDir(), name)
+	if err := os.MkdirAll(filepath.Join(root, "wiki"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	article := "---\npage_id: shared-page\ntitle: " + title + "\n---\n\n" + content + "\n"
 	if err := os.WriteFile(filepath.Join(root, "wiki", "article.md"), []byte(article), 0o600); err != nil {
 		t.Fatal(err)
 	}
