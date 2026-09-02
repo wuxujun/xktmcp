@@ -3,8 +3,73 @@ package wiki
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+func TestLoadConfigDefaultsResourcesDisabled(t *testing.T) {
+	cfg, err := LoadConfig(filepath.Join(t.TempDir(), "missing.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Resources.Enabled || cfg.Resources.SubscriptionsEnabled {
+		t.Fatalf("resources defaults = %+v, want disabled", cfg.Resources)
+	}
+	if cfg.Resources.MaxCatalogEntries != 1000 {
+		t.Fatalf("max_catalog_entries = %d, want 1000", cfg.Resources.MaxCatalogEntries)
+	}
+}
+
+func TestLoadConfigNormalizesResources(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "wiki"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "wiki.json")
+	raw := `{"mode":"local","resources":{"enabled":true},"local":{"root":"."}}`
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Resources.Enabled || cfg.Resources.MaxCatalogEntries != 1000 {
+		t.Fatalf("resources = %+v", cfg.Resources)
+	}
+}
+
+func TestLoadConfigRejectsInvalidResources(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{"http enabled", `{"mode":"http","resources":{"enabled":true}}`, "wiki resources.enabled requires local mode"},
+		{"subscriptions without resources", `{"mode":"local","resources":{"subscriptions_enabled":true},"local":{"root":"ROOT"}}`, "wiki resource subscriptions are not supported yet"},
+		{"subscriptions not implemented", `{"mode":"local","resources":{"enabled":true,"subscriptions_enabled":true},"local":{"root":"ROOT"}}`, "wiki resource subscriptions are not supported yet"},
+		{"negative limit", `{"mode":"local","resources":{"enabled":true,"max_catalog_entries":-1},"local":{"root":"ROOT"}}`, "wiki resources.max_catalog_entries must be between 1 and 10000"},
+		{"large limit", `{"mode":"local","resources":{"enabled":true,"max_catalog_entries":10001},"local":{"root":"ROOT"}}`, "wiki resources.max_catalog_entries must be between 1 and 10000"},
+		{"multi tenant subscriptions", `{"mode":"local","resources":{"enabled":true,"subscriptions_enabled":true},"local":{"root":"ROOT","users":{"u1":{"root":"ROOT"}}}}`, "wiki resource subscriptions are not supported yet"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.Mkdir(filepath.Join(dir, "wiki"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(dir, "wiki.json")
+			raw := strings.ReplaceAll(tt.raw, "ROOT", ".")
+			if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := LoadConfig(path)
+			if err == nil || err.Error() != tt.want {
+				t.Fatalf("LoadConfig error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
 
 func TestLoadConfigDefaultsToHTTPWhenMissing(t *testing.T) {
 	cfg, err := LoadConfig(filepath.Join(t.TempDir(), "missing.json"))

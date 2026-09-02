@@ -13,12 +13,22 @@ import (
 const (
 	ModeHTTP  = "http"
 	ModeLocal = "local"
+
+	DefaultMaxCatalogEntries = 1000
+	MaxCatalogEntriesLimit   = 10000
 )
+
+type ResourceConfig struct {
+	Enabled              bool `json:"enabled,omitempty"`
+	SubscriptionsEnabled bool `json:"subscriptions_enabled,omitempty"`
+	MaxCatalogEntries    int  `json:"max_catalog_entries,omitempty"`
+}
 
 // Config 控制 Wiki 工具使用远程 HTTP 后端还是本地 Markdown 后端。
 type Config struct {
-	Mode  string      `json:"mode"`
-	Local LocalConfig `json:"local"`
+	Mode      string         `json:"mode"`
+	Resources ResourceConfig `json:"resources,omitempty"`
+	Local     LocalConfig    `json:"local"`
 }
 
 // LocalConfig 描述本地 llm-wiki 文章目录与索引刷新策略。
@@ -36,7 +46,7 @@ type LocalConfig struct {
 // LoadConfig 加载 Wiki 配置。配置文件不存在时保持历史行为，使用 HTTP 后端。
 // local.root 的相对路径以配置文件所在目录为基准解析。
 func LoadConfig(path string) (Config, error) {
-	cfg := Config{Mode: ModeHTTP}
+	cfg := Config{Mode: ModeHTTP, Resources: ResourceConfig{MaxCatalogEntries: DefaultMaxCatalogEntries}}
 	path = strings.TrimSpace(path)
 	if path == "" {
 		return cfg, nil
@@ -63,15 +73,37 @@ func LoadConfig(path string) (Config, error) {
 	}
 	switch cfg.Mode {
 	case ModeHTTP:
+		if err := normalizeResourceConfig(&cfg); err != nil {
+			return Config{}, err
+		}
 		return cfg, nil
 	case ModeLocal:
 		if err := normalizeLocalConfig(&cfg.Local, filepath.Dir(path)); err != nil {
+			return Config{}, err
+		}
+		if err := normalizeResourceConfig(&cfg); err != nil {
 			return Config{}, err
 		}
 		return cfg, nil
 	default:
 		return Config{}, fmt.Errorf("unsupported wiki mode %q (want %q or %q)", cfg.Mode, ModeHTTP, ModeLocal)
 	}
+}
+
+func normalizeResourceConfig(cfg *Config) error {
+	if cfg.Resources.MaxCatalogEntries == 0 {
+		cfg.Resources.MaxCatalogEntries = DefaultMaxCatalogEntries
+	}
+	if cfg.Resources.MaxCatalogEntries < 1 || cfg.Resources.MaxCatalogEntries > MaxCatalogEntriesLimit {
+		return fmt.Errorf("wiki resources.max_catalog_entries must be between 1 and %d", MaxCatalogEntriesLimit)
+	}
+	if cfg.Resources.SubscriptionsEnabled {
+		return errors.New("wiki resource subscriptions are not supported yet")
+	}
+	if cfg.Resources.Enabled && cfg.Mode != ModeLocal {
+		return errors.New("wiki resources.enabled requires local mode")
+	}
+	return nil
 }
 
 func normalizeLocalConfig(cfg *LocalConfig, configDir string) error {
