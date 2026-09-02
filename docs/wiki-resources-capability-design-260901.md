@@ -99,6 +99,8 @@ SDK 的订阅表按 URI 关联会话，`ResourceUpdated` 会通知所有订阅�
 - `mode=http` 时设置 `enabled=true` 直接返回配置错误，避免出现配置已开启但能力未生效的静默状态。
 - `local.users` 非空时设置 `subscriptions_enabled=true` 返回配置错误，阻止按 URI 广播造成跨租户误通知。
 
+阶段 1–2 尚未装配订阅处理器，因此该阶段的实现必须拒绝任何 `subscriptions_enabled=true`；第三阶段落地时再放开单租户配置。
+
 ---
 
 ## 4. Resource URI 设计
@@ -106,7 +108,7 @@ SDK 的订阅表按 URI 关联会话，`ResourceUpdated` 会通知所有订阅�
 | URI | MIME 类型 | 用途 | `resources/list` 可见 |
 |:---|:---:|:---|:---:|
 | `wiki://catalog` | `application/json` | 当前用户可见页面的脱敏资源目录 | 是 |
-| `wiki://tree` | `application/json` | 当前用户 Wiki 完整目录树 | 是 |
+| `wiki://tree` | `application/json` | 当前用户 Wiki 目录树，最大深度 10 | 是 |
 | `wiki://page/{page_key}` | `text/markdown` | 指定页面的 Markdown 正文 | 通过模板 |
 
 ### 4.1 `page_key`
@@ -155,19 +157,25 @@ graph TD
 
 ```go
 type ResourceDescriptor struct {
-    URI         string
-    Name        string
-    Description string
-    MIMEType    string
+    URI         string `json:"uri"`
+    Name        string `json:"name"`
+    Description string `json:"description"`
+    MIMEType    string `json:"mimeType"`
 }
 
-func (s *LocalSearcher) ListResources(ctx context.Context) ([]ResourceDescriptor, error)
-func (s *LocalSearcher) ReadResource(ctx context.Context, uri string) (mimeType, text string, err error)
+type ResourceCatalog struct {
+    Total     int                  `json:"total"`
+    Truncated bool                 `json:"truncated"`
+    Items     []ResourceDescriptor `json:"items"`
+}
+
+func (s *LocalSearcher) ListResources(ctx context.Context, limit int) (ResourceCatalog, error)
+func (s *LocalSearcher) ReadPageResource(ctx context.Context, uri string) (string, error)
 ```
 
 行为要求：
 
-- `ListResources` 从一次加读锁的索引快照生成稳定排序的目录；
+- `ListResources` 从一次加读锁的索引快照生成稳定排序的目录，并按 limit 截断；
 - Catalog 中的 URI 使用页面真实 `page_id` 计算 `page_key`；
 - 页面读取通过索引定位，不直接接受或读取客户端提供的文件路径；
 - Tree 复用现有目录树逻辑；
@@ -176,7 +184,7 @@ func (s *LocalSearcher) ReadResource(ctx context.Context, uri string) (mimeType,
 
 ### 5.2 用户路由层
 
-在 `LocalRouter` 增加同名转发方法。每次调用先通过现有 `searcher(userID)` 选择当前用户实例，严格映射失败时向协议层返回统一不可见错误。
+在 `LocalRouter` 增加带 userID 的 `ListResources` 与 `ReadPageResource` 转发方法。每次调用先通过现有 `searcher(userID)` 选择当前用户实例，严格映射失败时向协议层返回统一不可见错误。
 
 资源 URI 不包含 userID。租户选择完全来自可信请求上下文，避免用户通过修改 URI 切换租户。
 
