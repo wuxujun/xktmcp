@@ -94,15 +94,17 @@ func RegisterAll(s *mcp.Server, wikiConfigPaths ...string) error {
 func registerWikiTools(s *mcp.Server, baseCfg client.Config, wikiConfig wikibackend.Config, enabledTools map[string]bool, breaker *client.CircuitBreaker) error {
 	wikiAPI := client.NewWikiAPI(baseCfg, breaker)
 	var wikiBackend service.WikiBackend = wikiAPI
+	var localRouter *wikibackend.LocalRouter
 	if wikiConfig.Mode == wikibackend.ModeLocal {
-		localSearcher, err := wikibackend.NewLocalRouter(wikiConfig.Local)
+		var err error
+		localRouter, err = wikibackend.NewLocalRouter(wikiConfig.Local)
 		if err != nil {
 			return err
 		}
-		wikiBackend = localSearcher
+		wikiBackend = localRouter
 		logger.Infof("Wiki 后端: local root=%s content_dirs=%v write_dir=%s configured_users=%d strict_user_mapping=%t indexed_documents=%d",
-			wikiConfig.Local.Root, wikiConfig.Local.ContentDirs, wikiConfig.Local.WriteDir, localSearcher.UserCount(),
-			wikiConfig.Local.RequireUserMapping, localSearcher.DocumentCount())
+			wikiConfig.Local.Root, wikiConfig.Local.ContentDirs, wikiConfig.Local.WriteDir, localRouter.UserCount(),
+			wikiConfig.Local.RequireUserMapping, localRouter.DocumentCount())
 	} else {
 		logger.Infof("Wiki 后端: http base_url=%s", baseCfg.BaseURL)
 	}
@@ -121,6 +123,9 @@ func registerWikiTools(s *mcp.Server, baseCfg client.Config, wikiConfig wikiback
 	}
 	if toolEnabled(enabledTools, "wiki_get_backlinks") {
 		addTool(s, tools.WikiGetBacklinksTool(), tools.WikiGetBacklinksHandler(wikiSvc))
+	}
+	if localRouter != nil && wikiConfig.Resources.Enabled {
+		registerWikiResources(s, localRouter, wikiConfig.Resources)
 	}
 
 	return nil

@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"sort"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/wuxujun/xktmcp/internal/trace"
+	wikibackend "github.com/wuxujun/xktmcp/internal/wiki"
 )
 
 func TestParseEnabledTools(t *testing.T) {
@@ -72,24 +74,7 @@ func TestRegisterAllLocalWikiDoesNotRequireUpstreamConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	server := mcp.NewServer(&mcp.Implementation{Name: "test-server", Version: "1.0.0"}, nil)
-	if err := RegisterAll(server, configPath); err != nil {
-		t.Fatalf("RegisterAll returned error: %v", err)
-	}
-
-	ctx := context.Background()
-	serverTransport, clientTransport := mcp.NewInMemoryTransports()
-	serverSession, err := server.Connect(ctx, serverTransport, nil)
-	if err != nil {
-		t.Fatalf("connect server: %v", err)
-	}
-	defer serverSession.Close()
-	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "1.0.0"}, nil)
-	clientSession, err := client.Connect(ctx, clientTransport, nil)
-	if err != nil {
-		t.Fatalf("connect client: %v", err)
-	}
-	defer clientSession.Close()
+	ctx, clientSession := connectRegisteredServer(t, configPath)
 
 	tools, err := clientSession.ListTools(ctx, nil)
 	if err != nil {
@@ -109,6 +94,95 @@ func TestRegisterAllLocalWikiDoesNotRequireUpstreamConfig(t *testing.T) {
 			t.Fatalf("registered tools = %v, want %v", names, want)
 		}
 	}
+	resources, err := clientSession.ListResources(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resources.Resources) != 0 {
+		t.Fatalf("resources=%+v, want none", resources.Resources)
+	}
+	templates, err := clientSession.ListResourceTemplates(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(templates.ResourceTemplates) != 0 {
+		t.Fatalf("templates=%+v, want none", templates.ResourceTemplates)
+	}
+}
+
+func TestRegisterAllLocalWikiResourcesOptIn(t *testing.T) {
+	t.Setenv("API_TOKEN", "")
+	t.Setenv("BASE_URL", "")
+	root := t.TempDir()
+	contentDir := filepath.Join(root, "content")
+	if err := os.Mkdir(contentDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	page := "---\npage_id: guide\ntitle: Guide\n---\n\nBody\n"
+	if err := os.WriteFile(filepath.Join(contentDir, "guide.md"), []byte(page), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(root, "wiki.json")
+	config := `{"mode":"local","resources":{"enabled":true},"local":{"root":".","content_dirs":["content"],"write_dir":"content"}}`
+	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, clientSession := connectRegisteredServer(t, configPath)
+	resources, err := clientSession.ListResources(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var uris []string
+	for _, resource := range resources.Resources {
+		uris = append(uris, resource.URI)
+	}
+	sort.Strings(uris)
+	if len(uris) != 2 || uris[0] != "wiki://catalog" || uris[1] != "wiki://tree" {
+		t.Fatalf("uris=%v", uris)
+	}
+	templates, err := clientSession.ListResourceTemplates(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(templates.ResourceTemplates) != 1 || templates.ResourceTemplates[0].URITemplate != "wiki://page/{page_key}" {
+		t.Fatalf("templates=%+v", templates.ResourceTemplates)
+	}
+	catalogRead, err := clientSession.ReadResource(ctx, &mcp.ReadResourceParams{URI: "wiki://catalog"})
+	if err != nil || len(catalogRead.Contents) != 1 {
+		t.Fatalf("catalog=%+v err=%v", catalogRead, err)
+	}
+	var catalog wikibackend.ResourceCatalog
+	if err := json.Unmarshal([]byte(catalogRead.Contents[0].Text), &catalog); err != nil || len(catalog.Items) != 1 {
+		t.Fatalf("catalog=%+v err=%v", catalog, err)
+	}
+	pageRead, err := clientSession.ReadResource(ctx, &mcp.ReadResourceParams{URI: catalog.Items[0].URI})
+	if err != nil || len(pageRead.Contents) != 1 || pageRead.Contents[0].Text != "Body" {
+		t.Fatalf("page=%+v err=%v", pageRead, err)
+	}
+}
+
+func connectRegisteredServer(t *testing.T, configPath string) (context.Context, *mcp.ClientSession) {
+	t.Helper()
+	server := mcp.NewServer(&mcp.Implementation{Name: "test-server", Version: "1.0.0"}, nil)
+	if err := RegisterAll(server, configPath); err != nil {
+		t.Fatalf("RegisterAll returned error: %v", err)
+	}
+
+	ctx := context.Background()
+	serverTransport, clientTransport := mcp.NewInMemoryTransports()
+	serverSession, err := server.Connect(ctx, serverTransport, nil)
+	if err != nil {
+		t.Fatalf("connect server: %v", err)
+	}
+	t.Cleanup(func() { _ = serverSession.Close() })
+	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "1.0.0"}, nil)
+	clientSession, err := client.Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatalf("connect client: %v", err)
+	}
+	t.Cleanup(func() { _ = clientSession.Close() })
+	return ctx, clientSession
 }
 
 func TestRegisterAllHTTPWikiStillRequiresUpstreamConfig(t *testing.T) {
