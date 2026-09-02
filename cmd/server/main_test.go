@@ -47,6 +47,19 @@ func TestReadinessHandler(t *testing.T) {
 	}
 }
 
+func TestResponseRecorderCapturesAndUnwraps(t *testing.T) {
+	base := httptest.NewRecorder()
+	rec := &responseRecorder{ResponseWriter: base, bodyCapture: newLimitedBodyCapture(3)}
+	rec.Write([]byte("hello"))
+	if rec.statusCode != http.StatusOK || rec.bodyCapture.String() != "hel" || !rec.bodyCapture.truncated {
+		t.Fatalf("status=%d body=%q truncated=%t", rec.statusCode, rec.bodyCapture.String(), rec.bodyCapture.truncated)
+	}
+	if rec.Unwrap() != base {
+		t.Fatal("Unwrap did not return underlying writer")
+	}
+	rec.Flush()
+}
+
 func TestBuildAuthConfigRejectsNonPositiveRemoteCacheCapacity(t *testing.T) {
 	for _, value := range []string{"0", "-1", "not-a-number"} {
 		t.Run(value, func(t *testing.T) {
