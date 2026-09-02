@@ -66,9 +66,21 @@ func TestEnvironmentParsingHelpers(t *testing.T) {
 	if _, err := envPositiveInt("TEST_POSITIVE", 2); err == nil {
 		t.Fatal("invalid positive integer accepted")
 	}
+	t.Setenv("TEST_POSITIVE", "0")
+	if _, err := envPositiveInt("TEST_POSITIVE", 2); err == nil {
+		t.Fatal("zero positive integer accepted")
+	}
+	t.Setenv("TEST_POSITIVE", "")
+	if got, err := envPositiveInt("TEST_POSITIVE", 2); err != nil || got != 2 {
+		t.Fatalf("empty fallback=%d err=%v", got, err)
+	}
 	t.Setenv("TEST_INT", "bad")
 	if got := envInt64("TEST_INT", 9); got != 9 {
 		t.Fatalf("fallback=%d", got)
+	}
+	t.Setenv("TEST_INT", "11")
+	if got := envInt64("TEST_INT", 9); got != 11 {
+		t.Fatalf("parsed int=%d", got)
 	}
 }
 
