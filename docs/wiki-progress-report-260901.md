@@ -77,6 +77,15 @@ ok   github.com/wuxujun/xktmcp/internal/server    (cached)
 > [!TIP]
 > 所有包 100% 通过，零失败、零跳过。
 
+### Wiki Resources 阶段状态
+
+| 阶段 | 范围 | 状态 |
+|:---|:---|:---:|
+| Phase 1 | 本地 Catalog、Tree 与 Page 资源模板；多用户路由、PII 脱敏、错误边界 | ✅ 完成 |
+| Phase 2 | InMemory、Streamable HTTP、SSE 传输验证与客户端兼容性记录 | ✅ 完成 |
+
+Resources 仅在本地模式且显式启用时注册，默认配置保持禁用。订阅功能为 optional，阶段 1–2 尚未实现；`subscriptions_enabled` 必须保持 `false`。
+
 ---
 
 ## 四、待优化功能分析

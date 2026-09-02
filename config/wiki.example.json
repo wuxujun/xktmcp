@@ -1,5 +1,10 @@
 {
   "mode": "http",
+  "resources": {
+    "enabled": false,
+    "subscriptions_enabled": false,
+    "max_catalog_entries": 1000
+  },
   "local": {
     "root": "../.wiki",
     "content_dirs": ["wiki"],

@@ -152,3 +152,15 @@ Local 模式可以按 `userId` 显式映射不同目录。映射的每个用户�
 ```
 
 `require_user_mapping=true` 时，缺少 `userId` 或未配置的用户会返回错误，避免意外读取默认库；为 `false`（默认）时，未映射用户继续使用顶层 `local.root`，兼容原有单目录配置。
+
+### Wiki Resources（本地模式）
+
+Wiki Resources 仅支持本地 Markdown 模式，默认关闭。设置 `resources.enabled=true` 后，服务注册两个固定资源（Catalog、Tree）和一个 Page 资源模板；HTTP Wiki 模式或默认禁用配置不会注册这些资源。共享多租户服务只会通过当前调用者对应的 Catalog 暴露页面元数据，不会把其他租户的页面信息放入静态资源或共享目录。
+
+阶段 1–2 尚未实现 Resources 订阅（`subscriptions_enabled`）；该字段必须保持 `false`，订阅通知不会被注册。
+
+### Wiki Resources (local mode)
+
+Wiki Resources are available only in local Markdown mode and are disabled by default. Set `resources.enabled=true` to register two fixed resources (Catalog and Tree) plus one Page resource template. HTTP Wiki mode and default-disabled configurations register no Resources. On a shared multi-tenant server, page metadata is exposed only through the caller-specific Catalog; static resources and shared catalogs do not contain another tenant's pages.
+
+Resources subscriptions are not implemented in phases 1–2 (`subscriptions_enabled`); keep this field `false`. No subscription notifications are registered.
