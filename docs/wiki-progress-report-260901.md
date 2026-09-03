@@ -86,6 +86,8 @@ ok   github.com/wuxujun/xktmcp/internal/server    (cached)
 
 Resources 仅在本地模式且显式启用时注册，默认配置保持禁用。订阅功能为 optional，阶段 1–2 尚未实现；`subscriptions_enabled` 必须保持 `false`。
 
+2026-09-02 已使用 VS Code 1.136.0 完成人工客户端联调：`resources/list`、`templates/list`、Catalog read、Page read 与 Page PII 脱敏全部通过。Claude Desktop 和 Cursor 仍待具名版本实测。
+
 ---
 
 ## 四、待优化功能分析
