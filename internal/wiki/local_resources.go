@@ -47,7 +47,7 @@ func ParsePageResourceURI(raw string) (string, error) {
 		return "", ErrResourceNotFound
 	}
 	key := strings.TrimPrefix(raw, pageResourcePrefix)
-	if key == "" || strings.ContainsAny(key, "/?#%=") {
+	if key == "" || len(key) > base64.RawURLEncoding.EncodedLen(maxResourcePageIDBytes) || strings.ContainsAny(key, "/?#%=") {
 		return "", ErrResourceNotFound
 	}
 	decoded, err := base64.RawURLEncoding.DecodeString(key)
@@ -74,10 +74,16 @@ type resourceEntry struct {
 
 func (s *LocalSearcher) ListResources(ctx context.Context, limit int) (ResourceCatalog, error) {
 	catalog := ResourceCatalog{Items: make([]ResourceDescriptor, 0)}
+	if err := ctx.Err(); err != nil {
+		return catalog, err
+	}
 	if limit < 1 {
 		return catalog, fmt.Errorf("wiki resource limit must be at least 1")
 	}
 	if err := s.refresh(ctx, false); err != nil {
+		return catalog, err
+	}
+	if err := ctx.Err(); err != nil {
 		return catalog, err
 	}
 
@@ -98,9 +104,15 @@ func (s *LocalSearcher) ListResources(ctx context.Context, limit int) (ResourceC
 		metadata = append(metadata, resourceMetadata{pageID: pageID, result: doc.result})
 	}
 	s.mu.RUnlock()
+	if err := ctx.Err(); err != nil {
+		return catalog, err
+	}
 
 	entries := make([]resourceEntry, 0, len(metadata))
 	for _, doc := range metadata {
+		if err := ctx.Err(); err != nil {
+			return catalog, err
+		}
 		uri, err := PageResourceURI(doc.pageID)
 		if err != nil {
 			return catalog, err
@@ -116,22 +128,37 @@ func (s *LocalSearcher) ListResources(ctx context.Context, limit int) (ResourceC
 			},
 		})
 	}
+	if err := ctx.Err(); err != nil {
+		return catalog, err
+	}
 
 	sort.Slice(entries, func(i, j int) bool {
 		return entries[i].pageID < entries[j].pageID
 	})
+	if err := ctx.Err(); err != nil {
+		return catalog, err
+	}
 	catalog.Total = len(entries)
 	if len(entries) > limit {
 		entries = entries[:limit]
 		catalog.Truncated = true
 	}
 	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return catalog, err
+		}
 		catalog.Items = append(catalog.Items, entry.descriptor)
+	}
+	if err := ctx.Err(); err != nil {
+		return catalog, err
 	}
 	return catalog, nil
 }
 
 func (s *LocalSearcher) ReadPageResource(ctx context.Context, uri string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	pageID, err := ParsePageResourceURI(uri)
 	if err != nil {
 		return "", err
@@ -141,6 +168,9 @@ func (s *LocalSearcher) ReadPageResource(ctx context.Context, uri string) (strin
 		return "", ErrResourceNotFound
 	}
 	if err != nil {
+		return "", err
+	}
+	if err := ctx.Err(); err != nil {
 		return "", err
 	}
 	return pii.Redact(page.Content), nil

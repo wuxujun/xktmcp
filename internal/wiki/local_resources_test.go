@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -19,6 +20,42 @@ func TestPageResourceURIRoundTrip(t *testing.T) {
 	got, err := ParsePageResourceURI(uri)
 	if err != nil || got != pageID {
 		t.Fatalf("pageID=%q err=%v", got, err)
+	}
+}
+
+func TestPageResourceURIPreservesMaximumBoundary(t *testing.T) {
+	const maxEncodedKeyBytes = 2731
+	pageID := strings.Repeat("a", maxResourcePageIDBytes)
+	uri, err := PageResourceURI(pageID)
+	if err != nil {
+		t.Fatalf("PageResourceURI(maximum) error=%v", err)
+	}
+	key := strings.TrimPrefix(uri, pageResourcePrefix)
+	if len(key) != maxEncodedKeyBytes {
+		t.Fatalf("encoded key length=%d, want %d", len(key), maxEncodedKeyBytes)
+	}
+	got, err := ParsePageResourceURI(uri)
+	if err != nil || got != pageID {
+		t.Fatalf("pageID length=%d err=%v, want maximum round trip", len(got), err)
+	}
+
+	if _, err := PageResourceURI(strings.Repeat("a", maxResourcePageIDBytes+1)); !errors.Is(err, ErrResourceNotFound) {
+		t.Fatalf("one-byte-over error=%v, want ErrResourceNotFound", err)
+	}
+}
+
+func TestParsePageResourceURIRejectsOversizedKeyBeforeDecode(t *testing.T) {
+	const maxEncodedKeyBytes = 2731
+	uri := pageResourcePrefix + strings.Repeat("Y", maxEncodedKeyBytes+1)
+	if _, err := ParsePageResourceURI(uri); !errors.Is(err, ErrResourceNotFound) {
+		t.Fatalf("error=%v, want ErrResourceNotFound", err)
+	}
+
+	allocations := testing.AllocsPerRun(10, func() {
+		_, _ = ParsePageResourceURI(uri)
+	})
+	if allocations != 0 {
+		t.Fatalf("oversized key caused %.0f allocations; decoder must not run", allocations)
 	}
 }
 
@@ -98,6 +135,101 @@ func TestLocalSearcherReadPageResourceRedactsContent(t *testing.T) {
 	}
 }
 
+func TestLocalSearcherReadPageResourceReturnsCanceledContext(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "wiki")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeResourcePage(t, dir, "page.md", "---\npage_id: page\ntitle: Page\n---\n\nBody.")
+	searcher, err := NewLocalSearcher(LocalConfig{Root: root, ContentDirs: []string{"wiki"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	uri, err := PageResourceURI("page")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := searcher.ReadPageResource(ctx, uri); !errors.Is(err, context.Canceled) {
+		t.Fatalf("error=%v, want context.Canceled", err)
+	}
+}
+
+func TestLocalSearcherReadPageResourceChecksCancellationAfterIndexedRead(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "wiki")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeResourcePage(t, dir, "page.md", "---\npage_id: page\ntitle: Page\n---\n\nBody.")
+	searcher, err := NewLocalSearcher(LocalConfig{Root: root, ContentDirs: []string{"wiki"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	uri, err := PageResourceURI("page")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := newCancelOnNthErrContext(2)
+
+	if _, err := searcher.ReadPageResource(ctx, uri); !errors.Is(err, context.Canceled) {
+		t.Fatalf("error=%v, want context.Canceled", err)
+	}
+}
+
+func TestLocalSearcherListResourcesReturnsCanceledForEmptyCatalog(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "wiki")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	searcher, err := NewLocalSearcher(LocalConfig{Root: root, ContentDirs: []string{"wiki"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := searcher.ListResources(ctx, 1); !errors.Is(err, context.Canceled) {
+		t.Fatalf("error=%v, want context.Canceled", err)
+	}
+}
+
+func TestLocalSearcherListResourcesChecksCancellationAcrossPhases(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "wiki")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeResourcePage(t, dir, "page.md", "---\npage_id: page\ntitle: Page\n---\n\nBody.")
+	searcher, err := NewLocalSearcher(LocalConfig{
+		Root: root, ContentDirs: []string{"wiki"}, RefreshIntervalSeconds: 3600,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tt := range []struct {
+		name     string
+		cancelAt int
+	}{
+		{name: "after refresh", cancelAt: 2},
+		{name: "during descriptor build", cancelAt: 5},
+		{name: "after sort", cancelAt: 7},
+		{name: "during output", cancelAt: 8},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := newCancelOnNthErrContext(tt.cancelAt)
+			if _, err := searcher.ListResources(ctx, 1); !errors.Is(err, context.Canceled) {
+				t.Fatalf("error=%v, want context.Canceled", err)
+			}
+		})
+	}
+}
+
 func TestLocalSearcherListResourcesRejectsDuplicatePageID(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "wiki")
@@ -122,4 +254,37 @@ func writeResourcePage(t *testing.T, dir, name, content string) {
 	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
+}
+
+type cancelOnNthErrContext struct {
+	context.Context
+	mu       sync.Mutex
+	calls    int
+	cancelAt int
+	done     chan struct{}
+	canceled bool
+}
+
+func newCancelOnNthErrContext(cancelAt int) *cancelOnNthErrContext {
+	return &cancelOnNthErrContext{
+		Context:  context.Background(),
+		cancelAt: cancelAt,
+		done:     make(chan struct{}),
+	}
+}
+
+func (c *cancelOnNthErrContext) Done() <-chan struct{} { return c.done }
+
+func (c *cancelOnNthErrContext) Err() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.calls++
+	if !c.canceled && c.calls >= c.cancelAt {
+		close(c.done)
+		c.canceled = true
+	}
+	if c.canceled {
+		return context.Canceled
+	}
+	return nil
 }

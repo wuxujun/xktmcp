@@ -585,6 +585,81 @@ func TestTenantPayloadAndPrincipalPolicy(t *testing.T) {
 	}
 }
 
+func TestTenantPrincipalIsInjectedForGETAndResourceRequests(t *testing.T) {
+	a := mustAuthenticator(t, Config{Tenants: []TenantConfig{{
+		Name: "tenant-a", Token: "secret", UserID: "user-a", AllowedTools: []string{"wiki_search"},
+	}}})
+	tests := []struct {
+		name   string
+		method string
+		path   string
+		body   string
+	}{
+		{name: "SSE GET", method: http.MethodGet, path: "/sse"},
+		{
+			name:   "resources read",
+			method: http.MethodPost,
+			path:   "/mcp",
+			body:   `{"jsonrpc":"2.0","id":1,"method":"resources/read","params":{"uri":"wiki://catalog"}}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(tt.method, tt.path, strings.NewReader(tt.body))
+			req.Header.Set("Authorization", "Bearer secret")
+			gotPrincipal := ""
+			gotBody := ""
+			rr := httptest.NewRecorder()
+			a.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotPrincipal = trace.AuthenticatedUserIDFromContext(r.Context())
+				data, _ := io.ReadAll(r.Body)
+				gotBody = string(data)
+				w.WriteHeader(http.StatusOK)
+			})).ServeHTTP(rr, req)
+			if rr.Code != http.StatusOK || gotPrincipal != "user-a" || gotBody != tt.body {
+				t.Fatalf("status=%d principal=%q body=%q", rr.Code, gotPrincipal, gotBody)
+			}
+		})
+	}
+}
+
+func TestTenantPrincipalRoutePolicyAppliesToResourceRequests(t *testing.T) {
+	a := mustAuthenticator(t, Config{Tenants: []TenantConfig{{
+		Name: "tenant-a", Token: "secret", UserID: "user-a", AllowedTools: []string{"wiki_search"},
+	}}})
+	body := `{"jsonrpc":"2.0","id":1,"method":"resources/read","params":{"uri":"wiki://catalog"}}`
+	tests := []struct {
+		name       string
+		routedUser string
+		wantStatus int
+		wantCalled bool
+	}{
+		{name: "matching route", routedUser: "user-a", wantStatus: http.StatusOK, wantCalled: true},
+		{name: "conflicting route", routedUser: "user-b", wantStatus: http.StatusForbidden, wantCalled: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body))
+			req.Header.Set("Authorization", "Bearer secret")
+			req = req.WithContext(trace.WithUserID(req.Context(), tt.routedUser))
+			called := false
+			gotPrincipal := ""
+			rr := httptest.NewRecorder()
+			a.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				called = true
+				gotPrincipal = trace.AuthenticatedUserIDFromContext(r.Context())
+				w.WriteHeader(http.StatusOK)
+			})).ServeHTTP(rr, req)
+			if rr.Code != tt.wantStatus || called != tt.wantCalled {
+				t.Fatalf("status=%d called=%t principal=%q", rr.Code, called, gotPrincipal)
+			}
+			if called && gotPrincipal != "user-a" {
+				t.Fatalf("principal=%q, want user-a", gotPrincipal)
+			}
+		})
+	}
+}
+
 func TestRemotePrincipalRejectsRoutedURLUserConflict(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

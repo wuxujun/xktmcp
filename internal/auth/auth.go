@@ -672,6 +672,17 @@ func (a *Authenticator) serveAuthenticated(
 	body []byte,
 	decision authenticationDecision,
 ) {
+	if decision.principal != "" {
+		routed := strings.TrimSpace(trace.UserIDFromContext(r.Context()))
+		if routed != "" && routed != decision.principal {
+			a.reject(w, r, http.StatusForbidden, fmt.Sprintf(
+				"authenticated userId conflict principal=%s routed=%s",
+				mask(decision.principal), mask(routed),
+			))
+			return
+		}
+		r = r.WithContext(trace.WithAuthenticatedUserID(r.Context(), decision.principal))
+	}
 	if r.Method != http.MethodPost || len(body) == 0 {
 		next.ServeHTTP(w, r)
 		return
@@ -693,12 +704,10 @@ func (a *Authenticator) serveAuthenticated(
 		}
 	}
 	if decision.principal != "" && rpc.method == "tools/call" {
-		routed := strings.TrimSpace(trace.UserIDFromContext(r.Context()))
-		if (routed != "" && routed != decision.principal) ||
-			(rpc.requestedUser != "" && rpc.requestedUser != decision.principal) {
+		if rpc.requestedUser != "" && rpc.requestedUser != decision.principal {
 			a.reject(w, r, http.StatusForbidden, fmt.Sprintf(
-				"authenticated userId conflict principal=%s routed=%s requested=%s",
-				mask(decision.principal), mask(routed), mask(rpc.requestedUser),
+				"authenticated userId conflict principal=%s requested=%s",
+				mask(decision.principal), mask(rpc.requestedUser),
 			))
 			return
 		}
