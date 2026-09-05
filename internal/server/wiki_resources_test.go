@@ -19,7 +19,7 @@ func TestWikiResourceCatalogUsesTrustedUserAndRedactsPII(t *testing.T) {
 	router := newMultiUserWikiResourceRouter(t)
 	ctxA := trace.WithAuthenticatedUserID(context.Background(), "user-a")
 
-	result, err := wikiCatalogHandler(router, 10)(ctxA, &mcp.ReadResourceRequest{
+	result, err := wikiCatalogHandler(router, 10, "")(ctxA, &mcp.ReadResourceRequest{
 		Params: &mcp.ReadResourceParams{URI: "wiki://catalog"},
 	})
 	if err != nil || len(result.Contents) != 1 {
@@ -53,7 +53,7 @@ func TestWikiResourcePageUsesTrustedUserForSharedURI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pageHandler := wikiPageHandler(router)
+	pageHandler := wikiPageHandler(router, "")
 	ctxA := trace.WithAuthenticatedUserID(context.Background(), "user-a")
 	ctxB := trace.WithAuthenticatedUserID(context.Background(), "user-b")
 
@@ -69,7 +69,7 @@ func TestWikiResourcePageUsesTrustedUserForSharedURI(t *testing.T) {
 
 func TestWikiResourceMapsInvalidURIAndUnknownUserToNotFound(t *testing.T) {
 	router := newMultiUserWikiResourceRouter(t)
-	pageHandler := wikiPageHandler(router)
+	pageHandler := wikiPageHandler(router, "")
 	ctxA := trace.WithAuthenticatedUserID(context.Background(), "user-a")
 
 	_, err := pageHandler(ctxA, &mcp.ReadResourceRequest{Params: &mcp.ReadResourceParams{URI: "wiki://page/%%%"}})
@@ -92,11 +92,11 @@ func TestWikiResourceRejectsMissingParamsAndMismatchedFixedURI(t *testing.T) {
 		handler mcp.ResourceHandler
 		req     *mcp.ReadResourceRequest
 	}{
-		{name: "catalog missing params", handler: wikiCatalogHandler(router, 10), req: &mcp.ReadResourceRequest{}},
-		{name: "catalog mismatched URI", handler: wikiCatalogHandler(router, 10), req: &mcp.ReadResourceRequest{Params: &mcp.ReadResourceParams{URI: "wiki://tree"}}},
+		{name: "catalog missing params", handler: wikiCatalogHandler(router, 10, ""), req: &mcp.ReadResourceRequest{}},
+		{name: "catalog mismatched URI", handler: wikiCatalogHandler(router, 10, ""), req: &mcp.ReadResourceRequest{Params: &mcp.ReadResourceParams{URI: "wiki://tree"}}},
 		{name: "tree missing params", handler: wikiTreeHandler(router), req: &mcp.ReadResourceRequest{}},
 		{name: "tree mismatched URI", handler: wikiTreeHandler(router), req: &mcp.ReadResourceRequest{Params: &mcp.ReadResourceParams{URI: "wiki://catalog"}}},
-		{name: "page missing params", handler: wikiPageHandler(router), req: &mcp.ReadResourceRequest{}},
+		{name: "page missing params", handler: wikiPageHandler(router, ""), req: &mcp.ReadResourceRequest{}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -125,7 +125,7 @@ func TestWikiResourceMasksUnexpectedBackendError(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = wikiPageHandler(backend)(ctx, &mcp.ReadResourceRequest{Params: &mcp.ReadResourceParams{URI: pageURI}})
+	_, err = wikiPageHandler(backend, "")(ctx, &mcp.ReadResourceRequest{Params: &mcp.ReadResourceParams{URI: pageURI}})
 	if err == nil || err.Error() != "read wiki resource failed" || strings.Contains(err.Error(), "/private/root") {
 		t.Fatalf("error=%v", err)
 	}

@@ -51,14 +51,18 @@ func RegisterAll(s *mcp.Server, wikiConfigPaths ...string) error {
 		return err
 	}
 
-	// 本地 Wiki 是独立部署模式，不应要求上游 API 配置，也不注册依赖上游的工具。
-	if wikiConfig.Mode == wikibackend.ModeLocal {
-		return registerWikiTools(s, client.Config{}, wikiConfig, enabledTools, breakerSet.Wiki)
-	}
-
-	baseCfg, err := client.LoadConfigFromEnv()
-	if err != nil {
-		return err
+	upstreamToolsEnabled := toolEnabled(enabledTools, "student_search") ||
+		toolEnabled(enabledTools, "student_order") ||
+		toolEnabled(enabledTools, "student_exam") ||
+		toolEnabled(enabledTools, "student_get") ||
+		toolEnabled(enabledTools, "rag_search") ||
+		toolEnabled(enabledTools, "staff_search")
+	baseCfg := client.Config{}
+	if wikiConfig.Mode != wikibackend.ModeLocal || upstreamToolsEnabled {
+		baseCfg, err = client.LoadConfigFromEnv()
+		if err != nil {
+			return err
+		}
 	}
 
 	studentAPI := client.NewStudentAPI(baseCfg, breakerSet.Student)
@@ -110,7 +114,7 @@ func registerWikiTools(s *mcp.Server, baseCfg client.Config, wikiConfig wikiback
 	}
 	wikiSvc := service.NewWikiService(wikiAPI, wikiBackend)
 	if toolEnabled(enabledTools, "wiki_search") {
-		addTool(s, tools.WikiSearchTool(), tools.WikiSearchHandler(wikiSvc))
+		addTool(s, tools.WikiSearchTool(), tools.WikiSearchHandler(wikiSvc, wikiConfig.Resources.LinkBaseURL))
 	}
 	if toolEnabled(enabledTools, "wiki_get_page") {
 		addTool(s, tools.WikiGetPageTool(), tools.WikiGetPageHandler(wikiSvc))

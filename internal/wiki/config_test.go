@@ -39,6 +39,72 @@ func TestLoadConfigNormalizesResources(t *testing.T) {
 	}
 }
 
+func TestLoadConfigNormalizesResourceLinkBaseURL(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "wiki"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "wiki.json")
+	raw := `{"mode":"local","resources":{"link_base_url":"  https://wiki.example.com/pages/  "},"local":{"root":"."}}`
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Resources.LinkBaseURL != "https://wiki.example.com/pages" {
+		t.Fatalf("link_base_url = %q", cfg.Resources.LinkBaseURL)
+	}
+}
+
+func TestLoadConfigTreatsBlankResourceLinkBaseURLAsUnset(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "wiki"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "wiki.json")
+	raw := `{"mode":"local","resources":{"link_base_url":"   "},"local":{"root":"."}}`
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Resources.LinkBaseURL != "" {
+		t.Fatalf("link_base_url = %q, want unset", cfg.Resources.LinkBaseURL)
+	}
+}
+
+func TestLoadConfigRejectsInvalidResourceLinkBaseURL(t *testing.T) {
+	tests := []string{
+		"http://wiki.example.com/pages",
+		"/pages",
+		"https://user:secret@wiki.example.com/pages",
+		"https://wiki.example.com/pages?token=secret",
+		"https://wiki.example.com/pages?",
+		"https://wiki.example.com/pages#section",
+		"https://wiki.example.com/pages#",
+	}
+	for _, linkBaseURL := range tests {
+		t.Run(linkBaseURL, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.Mkdir(filepath.Join(dir, "wiki"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(dir, "wiki.json")
+			raw := `{"mode":"local","resources":{"link_base_url":"` + linkBaseURL + `"},"local":{"root":"."}}`
+			if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := LoadConfig(path); err == nil {
+				t.Fatalf("LoadConfig accepted link_base_url %q", linkBaseURL)
+			}
+		})
+	}
+}
+
 func TestLoadConfigRejectsInvalidResources(t *testing.T) {
 	tests := []struct {
 		name string

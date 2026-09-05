@@ -159,8 +159,12 @@ Wiki Resources 仅支持本地 Markdown 模式，默认关闭。设置 `resource
 
 阶段 1–2 尚未实现 Resources 订阅（`subscriptions_enabled`）；该字段必须保持 `false`，订阅通知不会被注册。
 
+设置 `resources.link_base_url` 后，`wiki_search` 的 ResourceLink、Catalog 页面条目和页面 Resource Template 使用 `{link_base_url}/{Base64URL(page_id)}`；`resources/read` 接受该 HTTPS URI，并继续兼容 `wiki://page/{page_key}`。静态 `wiki://catalog` 与 `wiki://tree` 保持不变。该配置必须是无凭据、query 和 fragment 的绝对 HTTPS URL；目标 Wiki 网站负责解码 `page_key` 并执行登录、租户隔离与权限校验。
+
 ### Wiki Resources (local mode)
 
 Wiki Resources are available only in local Markdown mode and are disabled by default. Set `resources.enabled=true` to register two fixed resources (Catalog and Tree) plus one Page resource template. HTTP Wiki mode and default-disabled configurations register no Resources. On a shared multi-tenant server, page metadata is exposed only through the caller-specific Catalog; static resources and shared catalogs do not contain another tenant's pages.
 
 Resources subscriptions are not implemented in phases 1–2 (`subscriptions_enabled`); keep this field `false`. No subscription notifications are registered.
+
+When `resources.link_base_url` is set, `wiki_search` ResourceLink values, Catalog page entries, and the page Resource Template use `{link_base_url}/{Base64URL(page_id)}`. `resources/read` accepts that HTTPS URI and remains compatible with `wiki://page/{page_key}`. Static `wiki://catalog` and `wiki://tree` URIs stay unchanged. The configured value must be an absolute HTTPS URL without credentials, query, or fragment. The target Wiki site is responsible for decoding `page_key` and enforcing authentication, tenant isolation, and authorization.

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,9 +20,10 @@ const (
 )
 
 type ResourceConfig struct {
-	Enabled              bool `json:"enabled,omitempty"`
-	SubscriptionsEnabled bool `json:"subscriptions_enabled,omitempty"`
-	MaxCatalogEntries    int  `json:"max_catalog_entries,omitempty"`
+	Enabled              bool   `json:"enabled,omitempty"`
+	SubscriptionsEnabled bool   `json:"subscriptions_enabled,omitempty"`
+	MaxCatalogEntries    int    `json:"max_catalog_entries,omitempty"`
+	LinkBaseURL          string `json:"link_base_url,omitempty"`
 }
 
 // Config 控制 Wiki 工具使用远程 HTTP 后端还是本地 Markdown 后端。
@@ -91,6 +93,16 @@ func LoadConfig(path string) (Config, error) {
 }
 
 func normalizeResourceConfig(cfg *Config) error {
+	linkBaseURL := strings.TrimSpace(cfg.Resources.LinkBaseURL)
+	cfg.Resources.LinkBaseURL = linkBaseURL
+	if linkBaseURL != "" {
+		parsed, err := url.Parse(linkBaseURL)
+		if err != nil || !strings.EqualFold(parsed.Scheme, "https") || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.Opaque != "" || strings.ContainsAny(linkBaseURL, "?#") {
+			return errors.New("wiki resources.link_base_url must be an absolute HTTPS URL without credentials, query, or fragment")
+		}
+		parsed.Scheme = "https"
+		cfg.Resources.LinkBaseURL = strings.TrimRight(parsed.String(), "/")
+	}
 	if cfg.Resources.MaxCatalogEntries == 0 {
 		cfg.Resources.MaxCatalogEntries = DefaultMaxCatalogEntries
 	}

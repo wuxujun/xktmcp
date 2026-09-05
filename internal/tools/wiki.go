@@ -13,6 +13,7 @@ import (
 	"github.com/wuxujun/xktmcp/internal/pii"
 	"github.com/wuxujun/xktmcp/internal/service"
 	"github.com/wuxujun/xktmcp/internal/trace"
+	wikibackend "github.com/wuxujun/xktmcp/internal/wiki"
 )
 
 var wikiCache = sharedCache
@@ -151,6 +152,7 @@ func WikiGetBacklinksTool() *mcp.Tool {
 
 func WikiSearchHandler(
 	svc *service.WikiService,
+	resourceLinkBaseURL string,
 ) func(context.Context, *mcp.CallToolRequest, WikiSearchArgs) (*mcp.CallToolResult, any, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, args WikiSearchArgs) (*mcp.CallToolResult, any, error) {
 		userID := trace.EffectiveUserID(ctx, args.UserID)
@@ -161,7 +163,7 @@ func WikiSearchHandler(
 			topK = 5
 		}
 
-		cacheKey := fmt.Sprintf("wiki:search:%s:%s:%s:%d", userID, args.Query, args.Category, topK)
+		cacheKey := fmt.Sprintf("wiki:search:%s:%s:%s:%d:%s", userID, args.Query, args.Category, topK, resourceLinkBaseURL)
 		if val, ok := wikiCache.Get(cacheKey); ok {
 			cached := val.(toolResultItem)
 			logger.InfofCtx(ctx, "[Cache] wiki_search hit cache: query=%s", args.Query)
@@ -181,10 +183,24 @@ func WikiSearchHandler(
 		}
 
 		text, redacted := pii.RedactJSON(items)
+		content := []mcp.Content{
+			&mcp.TextContent{Text: text},
+		}
+		for _, item := range items {
+			resourceURI, err := wikibackend.PageResourceLinkURI(item.PageID, resourceLinkBaseURL)
+			if err != nil {
+				continue
+			}
+			content = append(content, &mcp.ResourceLink{
+				URI:         resourceURI,
+				Name:        item.PageID,
+				Title:       pii.Redact(item.Title),
+				Description: pii.Redact(item.Summary),
+				MIMEType:    "text/markdown",
+			})
+		}
 		res := &mcp.CallToolResult{
-			Content: []mcp.Content{
-				&mcp.TextContent{Text: text},
-			},
+			Content: content,
 		}
 		structured := map[string]any{"items": redacted}
 		wikiCache.Set(cacheKey, toolResultItem{result: res, data: structured}, wikiSearchTTL)

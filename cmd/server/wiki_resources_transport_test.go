@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -14,12 +16,13 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/wuxujun/xktmcp/internal/auth"
+	"github.com/wuxujun/xktmcp/internal/model"
 	mcp_server "github.com/wuxujun/xktmcp/internal/server"
 	wikibackend "github.com/wuxujun/xktmcp/internal/wiki"
 )
 
 func TestWikiResourcesTransports(t *testing.T) {
-	t.Setenv("MCP_ENABLED_TOOLS", "")
+	t.Setenv("MCP_ENABLED_TOOLS", "wiki_search,wiki_get_page,wiki_list_tree,wiki_upsert_page,wiki_get_backlinks")
 	configPath := newWikiResourceTransportConfig(t)
 
 	t.Run("streamable_http", func(t *testing.T) {
@@ -39,7 +42,7 @@ func TestWikiResourcesTransports(t *testing.T) {
 }
 
 func TestAuthenticatedWikiResourcesTransportsIsolateTenants(t *testing.T) {
-	t.Setenv("MCP_ENABLED_TOOLS", "")
+	t.Setenv("MCP_ENABLED_TOOLS", "wiki_search,wiki_get_page,wiki_list_tree,wiki_upsert_page,wiki_get_backlinks")
 	configPath := newMultiTenantWikiResourceTransportConfig(t)
 	tests := []struct {
 		name      string
@@ -185,8 +188,15 @@ func assertWikiResourcesOverTransport(t *testing.T, transport mcp.Transport) {
 		t.Fatalf("resources=%+v err=%v", listed, err)
 	}
 	templates, err := session.ListResourceTemplates(ctx, nil)
-	if err != nil || len(templates.ResourceTemplates) != 1 {
+	if err != nil || len(templates.ResourceTemplates) != 2 {
 		t.Fatalf("templates=%+v err=%v", templates, err)
+	}
+	var templateURIs []string
+	for _, template := range templates.ResourceTemplates {
+		templateURIs = append(templateURIs, template.URITemplate)
+	}
+	if !slices.Contains(templateURIs, "https://wiki.example.com/pages/{page_key}") || !slices.Contains(templateURIs, "wiki://page/{page_key}") {
+		t.Fatalf("resource templates=%v", templateURIs)
 	}
 	read, err := session.ReadResource(ctx, &mcp.ReadResourceParams{URI: "wiki://catalog"})
 	if err != nil || len(read.Contents) != 1 || !strings.Contains(read.Contents[0].Text, `"name":"Transport Guide"`) {
@@ -196,9 +206,54 @@ func assertWikiResourcesOverTransport(t *testing.T, transport mcp.Transport) {
 	if err := json.Unmarshal([]byte(read.Contents[0].Text), &catalog); err != nil || len(catalog.Items) != 1 {
 		t.Fatalf("decoded catalog=%+v err=%v", catalog, err)
 	}
+	if catalog.Items[0].URI != "https://wiki.example.com/pages/dHJhbnNwb3J0LWd1aWRl" {
+		t.Fatalf("catalog resource URI=%q", catalog.Items[0].URI)
+	}
 	page, err := session.ReadResource(ctx, &mcp.ReadResourceParams{URI: catalog.Items[0].URI})
 	if err != nil || len(page.Contents) != 1 || page.Contents[0].Text != "Transport body" {
 		t.Fatalf("page=%+v err=%v", page, err)
+	}
+	if page.Contents[0].URI != catalog.Items[0].URI {
+		t.Fatalf("page response URI=%q, want %q", page.Contents[0].URI, catalog.Items[0].URI)
+	}
+	legacyPage, err := session.ReadResource(ctx, &mcp.ReadResourceParams{URI: "wiki://page/dHJhbnNwb3J0LWd1aWRl"})
+	if err != nil || len(legacyPage.Contents) != 1 || legacyPage.Contents[0].Text != "Transport body" {
+		t.Fatalf("legacy page=%+v err=%v", legacyPage, err)
+	}
+	search, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "wiki_search",
+		Arguments: map[string]any{"query": "Transport", "top_k": 5},
+	})
+	if err != nil || search.IsError || len(search.Content) != 2 {
+		t.Fatalf("wiki_search=%+v err=%v", search, err)
+	}
+	text, ok := search.Content[0].(*mcp.TextContent)
+	if !ok {
+		t.Fatalf("wiki_search text fallback type=%T", search.Content[0])
+	}
+	var textItems []model.WikiSearchResult
+	if err := json.Unmarshal([]byte(text.Text), &textItems); err != nil || len(textItems) != 1 {
+		t.Fatalf("wiki_search text fallback=%#v err=%v", textItems, err)
+	}
+	if textItems[0].PageID != "transport-guide" || textItems[0].Title != "Transport Guide" || textItems[0].Summary != "Transport body" {
+		t.Fatalf("wiki_search text fallback item=%#v", textItems[0])
+	}
+	structuredJSON, err := json.Marshal(search.StructuredContent)
+	if err != nil {
+		t.Fatalf("marshal wiki_search structured fallback: %v", err)
+	}
+	var structured struct {
+		Items []model.WikiSearchResult `json:"items"`
+	}
+	if err := json.Unmarshal(structuredJSON, &structured); err != nil || !reflect.DeepEqual(structured.Items, textItems) {
+		t.Fatalf("wiki_search structured fallback=%#v err=%v", structured, err)
+	}
+	link, ok := search.Content[1].(*mcp.ResourceLink)
+	if !ok {
+		t.Fatalf("wiki_search resource link type=%T", search.Content[1])
+	}
+	if link.URI != "https://wiki.example.com/pages/dHJhbnNwb3J0LWd1aWRl" || link.Name != "transport-guide" || link.Title != "Transport Guide" || link.MIMEType != "text/markdown" {
+		t.Fatalf("wiki_search resource link=%+v", link)
 	}
 }
 
@@ -242,7 +297,7 @@ func newWikiResourceTransportConfig(t *testing.T) string {
 		t.Fatal(err)
 	}
 	configPath := filepath.Join(root, "wiki.json")
-	config := `{"mode":"local","resources":{"enabled":true},"local":{"root":".","content_dirs":["content"],"write_dir":"content"}}`
+	config := `{"mode":"local","resources":{"enabled":true,"link_base_url":"https://wiki.example.com/pages/"},"local":{"root":".","content_dirs":["content"],"write_dir":"content"}}`
 	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
 		t.Fatal(err)
 	}

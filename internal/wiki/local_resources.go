@@ -35,11 +35,44 @@ type ResourceCatalog struct {
 	Items     []ResourceDescriptor `json:"items"`
 }
 
-func PageResourceURI(pageID string) (string, error) {
+func pageResourceKey(pageID string) (string, error) {
 	if pageID == "" || strings.TrimSpace(pageID) != pageID || len(pageID) > maxResourcePageIDBytes || !utf8.ValidString(pageID) {
 		return "", ErrResourceNotFound
 	}
-	return pageResourcePrefix + base64.RawURLEncoding.EncodeToString([]byte(pageID)), nil
+	return base64.RawURLEncoding.EncodeToString([]byte(pageID)), nil
+}
+
+func PageResourceURI(pageID string) (string, error) {
+	key, err := pageResourceKey(pageID)
+	if err != nil {
+		return "", err
+	}
+	return pageResourcePrefix + key, nil
+}
+
+func PageResourceLinkURI(pageID, linkBaseURL string) (string, error) {
+	key, err := pageResourceKey(pageID)
+	if err != nil {
+		return "", err
+	}
+	if linkBaseURL == "" {
+		return pageResourcePrefix + key, nil
+	}
+	return strings.TrimRight(linkBaseURL, "/") + "/" + key, nil
+}
+
+func ParsePageResourceLinkURI(raw, linkBaseURL string) (string, error) {
+	if strings.HasPrefix(raw, pageResourcePrefix) {
+		return ParsePageResourceURI(raw)
+	}
+	if linkBaseURL == "" {
+		return "", ErrResourceNotFound
+	}
+	prefix := strings.TrimRight(linkBaseURL, "/") + "/"
+	if !strings.HasPrefix(raw, prefix) {
+		return "", ErrResourceNotFound
+	}
+	return ParsePageResourceURI(pageResourcePrefix + strings.TrimPrefix(raw, prefix))
 }
 
 func ParsePageResourceURI(raw string) (string, error) {

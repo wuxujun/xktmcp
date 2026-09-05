@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -61,9 +62,10 @@ func TestWrapToolHandlerUsesResolvedIdentity(t *testing.T) {
 	}
 }
 
-func TestRegisterAllLocalWikiDoesNotRequireUpstreamConfig(t *testing.T) {
+func TestRegisterAllLocalWikiOnlyAllowlistDoesNotRequireUpstreamConfig(t *testing.T) {
 	t.Setenv("API_TOKEN", "")
 	t.Setenv("BASE_URL", "")
+	t.Setenv("MCP_ENABLED_TOOLS", "wiki_search,wiki_get_page,wiki_list_tree,wiki_upsert_page,wiki_get_backlinks")
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, "content"), 0o700); err != nil {
 		t.Fatal(err)
@@ -110,9 +112,69 @@ func TestRegisterAllLocalWikiDoesNotRequireUpstreamConfig(t *testing.T) {
 	}
 }
 
+func TestRegisterAllLocalWikiRegistersAllToolsByDefault(t *testing.T) {
+	t.Setenv("API_TOKEN", "test-token")
+	t.Setenv("BASE_URL", "https://api.example.com")
+	t.Setenv("MCP_ENABLED_TOOLS", "")
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "content"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(root, "wiki.json")
+	config := `{"mode":"local","local":{"root":".","content_dirs":["content"],"write_dir":"content"}}`
+	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, clientSession := connectRegisteredServer(t, configPath)
+	result, err := clientSession.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatalf("list tools: %v", err)
+	}
+	var names []string
+	for _, tool := range result.Tools {
+		names = append(names, tool.Name)
+	}
+	sort.Strings(names)
+	want := []string{
+		"rag_search", "staff_search", "student_exam", "student_get", "student_order", "student_search",
+		"wiki_get_backlinks", "wiki_get_page", "wiki_list_tree", "wiki_search", "wiki_upsert_page",
+	}
+	if len(names) != len(want) {
+		t.Fatalf("registered tools = %v, want %v", names, want)
+	}
+	for i := range want {
+		if names[i] != want[i] {
+			t.Fatalf("registered tools = %v, want %v", names, want)
+		}
+	}
+}
+
+func TestRegisterAllLocalWikiDefaultRequiresUpstreamConfig(t *testing.T) {
+	t.Setenv("API_TOKEN", "")
+	t.Setenv("BASE_URL", "")
+	t.Setenv("MCP_ENABLED_TOOLS", "")
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "content"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(root, "wiki.json")
+	config := `{"mode":"local","local":{"root":".","content_dirs":["content"],"write_dir":"content"}}`
+	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	server := mcp.NewServer(&mcp.Implementation{Name: "test-server", Version: "1.0.0"}, nil)
+	err := RegisterAll(server, configPath)
+	if err == nil || !strings.Contains(err.Error(), "missing required env API_TOKEN") {
+		t.Fatalf("RegisterAll error = %v, want missing API_TOKEN", err)
+	}
+}
+
 func TestRegisterAllLocalWikiResourcesOptIn(t *testing.T) {
 	t.Setenv("API_TOKEN", "")
 	t.Setenv("BASE_URL", "")
+	t.Setenv("MCP_ENABLED_TOOLS", "wiki_search,wiki_get_page,wiki_list_tree,wiki_upsert_page,wiki_get_backlinks")
 	root := t.TempDir()
 	contentDir := filepath.Join(root, "content")
 	if err := os.Mkdir(contentDir, 0o700); err != nil {
@@ -145,7 +207,7 @@ func TestRegisterAllLocalWikiResourcesOptIn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(templates.ResourceTemplates) != 1 || templates.ResourceTemplates[0].URITemplate != "wiki://page/{page_key}" {
+	if len(templates.ResourceTemplates) != 1 || templates.ResourceTemplates[0].URITemplate != "wiki://page/{page_key}" || templates.ResourceTemplates[0].Name != "wiki-page" {
 		t.Fatalf("templates=%+v", templates.ResourceTemplates)
 	}
 	catalogRead, err := clientSession.ReadResource(ctx, &mcp.ReadResourceParams{URI: "wiki://catalog"})

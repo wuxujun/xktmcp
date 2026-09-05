@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/wuxujun/xktmcp/internal/client"
 	"github.com/wuxujun/xktmcp/internal/model"
 	"github.com/wuxujun/xktmcp/internal/service"
@@ -61,7 +62,7 @@ func TestWikiSearchHandler(t *testing.T) {
 	ts, svc := setupWikiToolsTest(t)
 	defer ts.Close()
 
-	handler := WikiSearchHandler(svc)
+	handler := WikiSearchHandler(svc, "")
 	res, data, err := handler(context.Background(), nil, WikiSearchArgs{Query: "test", TopK: 5})
 	if err != nil {
 		t.Fatalf("handler returned error: %v", err)
@@ -74,6 +75,82 @@ func TestWikiSearchHandler(t *testing.T) {
 	}
 	if _, ok := data.(map[string]any)["items"]; !ok {
 		t.Fatalf("expected object data containing items, got %#v", data)
+	}
+}
+
+func TestWikiSearchHandlerAddsResourceLinkAndKeepsTextFallback(t *testing.T) {
+	ts, svc := setupWikiToolsTest(t)
+	defer ts.Close()
+
+	handler := WikiSearchHandler(svc, "")
+	res, data, err := handler(context.Background(), nil, WikiSearchArgs{Query: "resource-link", TopK: 5})
+	if err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+	if res == nil || res.IsError {
+		t.Fatalf("unexpected tool result: %+v", res)
+	}
+	if len(res.Content) != 2 {
+		t.Fatalf("expected text fallback and one resource link, got %#v", res.Content)
+	}
+	text, ok := res.Content[0].(*mcp.TextContent)
+	if !ok {
+		t.Fatalf("expected first content item to remain text, got %T", res.Content[0])
+	}
+	wantItem := model.WikiSearchResult{PageID: "p1", Title: "Title 1", Summary: "Summary 1"}
+	var textItems []model.WikiSearchResult
+	if err := json.Unmarshal([]byte(text.Text), &textItems); err != nil || len(textItems) != 1 || textItems[0] != wantItem {
+		t.Fatalf("unexpected text fallback: items=%#v err=%v", textItems, err)
+	}
+	link, ok := res.Content[1].(*mcp.ResourceLink)
+	if !ok {
+		t.Fatalf("expected second content item to be a resource link, got %T", res.Content[1])
+	}
+	if link.URI != "wiki://page/cDE" {
+		t.Errorf("unexpected resource URI: %q", link.URI)
+	}
+	if link.Name != "p1" || link.Title != "Title 1" {
+		t.Errorf("unexpected resource identity: name=%q title=%q", link.Name, link.Title)
+	}
+	if link.Description != "Summary 1" || link.MIMEType != "text/markdown" {
+		t.Errorf("unexpected resource metadata: description=%q mime_type=%q", link.Description, link.MIMEType)
+	}
+	structuredJSON, err := json.Marshal(data)
+	if err != nil {
+		t.Fatalf("marshal structured fallback: %v", err)
+	}
+	var structured WikiSearchResponse
+	if err := json.Unmarshal(structuredJSON, &structured); err != nil || len(structured.Items) != 1 || structured.Items[0] != wantItem {
+		t.Fatalf("unexpected structured fallback: data=%#v err=%v", structured, err)
+	}
+}
+
+func TestWikiSearchHandlerCacheSeparatesResourceLinkBaseURL(t *testing.T) {
+	ts, svc := setupWikiToolsTest(t)
+	defer ts.Close()
+
+	oldCache := wikiCache
+	wikiCache = NewMemoryCacheWithOptions(16, 0)
+	t.Cleanup(func() {
+		wikiCache.Stop()
+		wikiCache = oldCache
+	})
+
+	args := WikiSearchArgs{Query: "cache-prefix", TopK: 5}
+	first, _, err := WikiSearchHandler(svc, "https://first.example.com/pages")(context.Background(), nil, args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if link, ok := first.Content[1].(*mcp.ResourceLink); !ok || link.URI != "https://first.example.com/pages/cDE" {
+		t.Fatalf("first resource link=%#v", first.Content[1])
+	}
+
+	second, _, err := WikiSearchHandler(svc, "https://second.example.com/pages")(context.Background(), nil, args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if link, ok := second.Content[1].(*mcp.ResourceLink); !ok || link.URI != "https://second.example.com/pages/cDE" {
+		t.Fatalf("second resource link=%#v", second.Content[1])
 	}
 }
 

@@ -25,22 +25,33 @@ func registerWikiResources(s *mcp.Server, backend wikiResourceBackend, cfg wikib
 		Name:     "wiki-catalog",
 		Title:    "Wiki 资源目录",
 		MIMEType: "application/json",
-	}, wikiCatalogHandler(backend, cfg.MaxCatalogEntries))
+	}, wikiCatalogHandler(backend, cfg.MaxCatalogEntries, cfg.LinkBaseURL))
 	s.AddResource(&mcp.Resource{
 		URI:      "wiki://tree",
 		Name:     "wiki-tree",
 		Title:    "Wiki 目录树",
 		MIMEType: "application/json",
 	}, wikiTreeHandler(backend))
+	pageHandler := wikiPageHandler(backend, cfg.LinkBaseURL)
+	legacyName := "wiki-page"
+	if cfg.LinkBaseURL != "" {
+		s.AddResourceTemplate(&mcp.ResourceTemplate{
+			URITemplate: cfg.LinkBaseURL + "/{page_key}",
+			Name:        "wiki-page",
+			Title:       "Wiki 页面",
+			MIMEType:    "text/markdown",
+		}, pageHandler)
+		legacyName = "wiki-page-legacy"
+	}
 	s.AddResourceTemplate(&mcp.ResourceTemplate{
 		URITemplate: "wiki://page/{page_key}",
-		Name:        "wiki-page",
+		Name:        legacyName,
 		Title:       "Wiki 页面",
 		MIMEType:    "text/markdown",
-	}, wikiPageHandler(backend))
+	}, pageHandler)
 }
 
-func wikiCatalogHandler(backend wikiResourceBackend, maxCatalogEntries int) mcp.ResourceHandler {
+func wikiCatalogHandler(backend wikiResourceBackend, maxCatalogEntries int, linkBaseURL string) mcp.ResourceHandler {
 	return func(ctx context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
 		const uri = "wiki://catalog"
 		if req == nil || req.Params == nil || req.Params.URI != uri {
@@ -50,6 +61,16 @@ func wikiCatalogHandler(backend wikiResourceBackend, maxCatalogEntries int) mcp.
 		catalog, err := backend.ListResources(ctx, userID, maxCatalogEntries)
 		if err != nil {
 			return nil, wikiResourceError(ctx, uri, err)
+		}
+		for i := range catalog.Items {
+			pageID, err := wikibackend.ParsePageResourceURI(catalog.Items[i].URI)
+			if err != nil {
+				return nil, wikiResourceError(ctx, uri, err)
+			}
+			catalog.Items[i].URI, err = wikibackend.PageResourceLinkURI(pageID, linkBaseURL)
+			if err != nil {
+				return nil, wikiResourceError(ctx, uri, err)
+			}
 		}
 		raw, err := json.Marshal(catalog)
 		if err != nil {
@@ -75,14 +96,22 @@ func wikiTreeHandler(backend wikiResourceBackend) mcp.ResourceHandler {
 	}
 }
 
-func wikiPageHandler(backend wikiResourceBackend) mcp.ResourceHandler {
+func wikiPageHandler(backend wikiResourceBackend, linkBaseURL string) mcp.ResourceHandler {
 	return func(ctx context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
 		if req == nil || req.Params == nil {
 			return nil, mcp.ResourceNotFoundError(requestedResourceURI(req))
 		}
 		uri := req.Params.URI
+		pageID, err := wikibackend.ParsePageResourceLinkURI(uri, linkBaseURL)
+		if err != nil {
+			return nil, mcp.ResourceNotFoundError(uri)
+		}
+		backendURI, err := wikibackend.PageResourceURI(pageID)
+		if err != nil {
+			return nil, mcp.ResourceNotFoundError(uri)
+		}
 		userID := trace.EffectiveUserID(ctx, "")
-		text, err := backend.ReadPageResource(ctx, userID, uri)
+		text, err := backend.ReadPageResource(ctx, userID, backendURI)
 		if err != nil {
 			return nil, wikiResourceError(ctx, uri, err)
 		}
