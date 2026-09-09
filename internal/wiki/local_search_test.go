@@ -2,10 +2,77 @@ package wiki
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
+	"time"
 )
+
+// Pause a refresh at its first cancellation check, after directory traversal starts.
+type pausedRefreshContext struct {
+	context.Context
+	once    sync.Once
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (c *pausedRefreshContext) Err() error {
+	c.once.Do(func() { close(c.entered); <-c.release })
+	return c.Context.Err()
+}
+
+func TestLocalSearcherSearchDuringRefresh(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "wiki"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "wiki", "page.md")
+	if err := os.WriteFile(path, []byte("# Old title\n\nsearchable"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := NewLocalSearcher(LocalConfig{Root: root, ContentDirs: []string{"wiki"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("# New title\n\nsearchable"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	s.nextRefresh = time.Time{}
+	s.mu.Unlock()
+	ctx := &pausedRefreshContext{Context: context.Background(), entered: make(chan struct{}), release: make(chan struct{})}
+	refreshed := make(chan error, 1)
+	go func() { refreshed <- s.refresh(ctx, true) }()
+	<-ctx.entered
+	defer func() {
+		close(ctx.release)
+		if err := <-refreshed; err != nil {
+			t.Error(err)
+		}
+		items, err := s.SearchWiki(context.Background(), "", "searchable", "", 5)
+		if err != nil || len(items) != 1 || items[0].Title != "New title" {
+			t.Errorf("expected refreshed snapshot, got %+v, err=%v", items, err)
+		}
+	}()
+	searched := make(chan error, 1)
+	go func() {
+		items, err := s.SearchWiki(context.Background(), "", "searchable", "", 5)
+		if err == nil && (len(items) != 1 || items[0].Title != "Old title") {
+			err = fmt.Errorf("expected previous snapshot, got %+v", items)
+		}
+		searched <- err
+	}()
+	select {
+	case err := <-searched:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("search blocked behind index refresh")
+	}
+}
 
 func TestLocalSearcherSearchesCompiledArticles(t *testing.T) {
 	root := t.TempDir()

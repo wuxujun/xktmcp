@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -75,6 +76,41 @@ func TestWikiSearchHandler(t *testing.T) {
 	}
 	if _, ok := data.(map[string]any)["items"]; !ok {
 		t.Fatalf("expected object data containing items, got %#v", data)
+	}
+}
+
+func TestWikiSearchHandlerCacheSeparatesQueryFields(t *testing.T) {
+	oldCache := wikiCache
+	wikiCache = NewMemoryCacheWithOptions(16, 0)
+	t.Cleanup(func() { wikiCache.Stop(); wikiCache = oldCache })
+	var requests atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": []model.WikiSearchResult{{Title: r.URL.Query().Get("query")}}})
+	}))
+	defer ts.Close()
+	svc := service.NewWikiService(client.NewWikiAPI(client.Config{BaseURL: ts.URL, Timeout: time.Second}))
+	handler := WikiSearchHandler(svc, "")
+	for _, tc := range []struct {
+		query, category string
+		topK            int
+		want            string
+	}{
+		{"a:b", "c", 20, "a:b"},
+		{"a", "b:c", 20, "a"},
+		{" a ", " b:c ", 100, "a"},
+	} {
+		res, _, err := handler(context.Background(), nil, WikiSearchArgs{Query: tc.query, Category: tc.category, TopK: tc.topK})
+		if err != nil || res == nil || res.IsError {
+			t.Fatalf("search failed: %v, %+v", err, res)
+		}
+		var items []model.WikiSearchResult
+		if err := json.Unmarshal([]byte(res.Content[0].(*mcp.TextContent).Text), &items); err != nil || len(items) != 1 || items[0].Title != tc.want {
+			t.Fatalf("query %q returned %+v, err=%v; want %q", tc.query, items, err, tc.want)
+		}
+	}
+	if requests.Load() != 2 {
+		t.Fatalf("backend requests = %d, want 2 (normalized request should hit cache)", requests.Load())
 	}
 }
 
@@ -204,13 +240,13 @@ func TestWikiUpsertPageHandlerInvalidatesOnlyEffectiveUserCache(t *testing.T) {
 	})
 
 	userAKeys := []string{
-		"wiki:search:user-a:query::5",
+		"wiki:search:dXNlci1h:query::5",
 		"wiki:page:user-a:p1:",
 		"wiki:tree:user-a::3",
 		"wiki:backlinks:user-a:p1",
 	}
 	userBKeys := []string{
-		"wiki:search:user-b:query::5",
+		"wiki:search:dXNlci1i:query::5",
 		"wiki:page:user-b:p1:",
 		"wiki:tree:user-b::3",
 		"wiki:backlinks:user-b:p1",

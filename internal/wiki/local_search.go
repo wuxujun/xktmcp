@@ -28,6 +28,7 @@ type LocalSearcher struct {
 	cfg         LocalConfig
 	mu          sync.RWMutex
 	writeMu     sync.Mutex
+	refreshMu   sync.Mutex
 	documents   []localDocument
 	backlinks   map[string][]model.WikiBacklink
 	nextRefresh time.Time
@@ -99,9 +100,23 @@ func (s *LocalSearcher) SearchWiki(ctx context.Context, _ string, query, categor
 }
 
 func (s *LocalSearcher) refresh(ctx context.Context, force bool) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if !force && time.Now().Before(s.nextRefresh) {
+	s.mu.RLock()
+	fresh := time.Now().Before(s.nextRefresh)
+	s.mu.RUnlock()
+	if !force && fresh {
+		return nil
+	}
+	if force {
+		s.refreshMu.Lock()
+	} else if !s.refreshMu.TryLock() {
+		// Another request is rebuilding; readers can use the published snapshot.
+		return nil
+	}
+	defer s.refreshMu.Unlock()
+	s.mu.RLock()
+	fresh = time.Now().Before(s.nextRefresh)
+	s.mu.RUnlock()
+	if !force && fresh {
 		return nil
 	}
 
@@ -159,6 +174,8 @@ func (s *LocalSearcher) refresh(ctx context.Context, force bool) error {
 	if err != nil {
 		return err
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.documents = documents
 	s.backlinks = backlinks
 	s.nextRefresh = time.Now().Add(s.cfg.RefreshInterval())

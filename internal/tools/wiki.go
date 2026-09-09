@@ -2,7 +2,10 @@ package tools
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/jsonschema-go/jsonschema"
@@ -161,9 +164,15 @@ func WikiSearchHandler(
 		topK := args.TopK
 		if topK <= 0 {
 			topK = 5
+		} else if topK > 20 {
+			topK = 20
 		}
 
-		cacheKey := fmt.Sprintf("wiki:search:%s:%s:%s:%d:%s", userID, args.Query, args.Category, topK, resourceLinkBaseURL)
+		userID = strings.TrimSpace(userID)
+		query, category := strings.TrimSpace(args.Query), strings.TrimSpace(args.Category)
+		// A fixed string tuple cannot fail JSON encoding and preserves field boundaries.
+		fields, _ := json.Marshal([4]string{query, category, fmt.Sprint(topK), resourceLinkBaseURL})
+		cacheKey := wikiSearchCachePrefix(userID) + string(fields)
 		if val, ok := wikiCache.Get(cacheKey); ok {
 			cached := val.(toolResultItem)
 			logger.InfofCtx(ctx, "[Cache] wiki_search hit cache: query=%s", args.Query)
@@ -172,7 +181,7 @@ func WikiSearchHandler(
 		}
 		metrics.ObserveCacheAccess("wiki_search", false)
 
-		items, err := svc.Search(ctx, userID, args.Query, args.Category, topK)
+		items, err := svc.Search(ctx, userID, query, category, topK)
 		if err != nil {
 			return &mcp.CallToolResult{
 				Content: []mcp.Content{
@@ -317,13 +326,18 @@ func WikiUpsertPageHandler(
 	}
 }
 
+func wikiSearchCachePrefix(userID string) string {
+	return "wiki:search:" + base64.RawURLEncoding.EncodeToString([]byte(userID)) + ":"
+}
+
 func invalidateWikiCache(userID string) {
 	if userID == "" {
 		wikiCache.DeletePrefix("wiki:")
 		return
 	}
 
-	for _, operation := range []string{"search", "page", "tree", "backlinks"} {
+	wikiCache.DeletePrefix(wikiSearchCachePrefix(strings.TrimSpace(userID)))
+	for _, operation := range []string{"page", "tree", "backlinks"} {
 		wikiCache.DeletePrefix(fmt.Sprintf("wiki:%s:%s:", operation, userID))
 	}
 }
