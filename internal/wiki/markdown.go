@@ -55,9 +55,12 @@ func loadDocument(root, contentRoot, path string, info fs.FileInfo) (localDocume
 			Category:  category,
 			UpdatedAt: updated,
 		},
-		content:     body,
-		path:        path,
-		frontmatter: frontmatter,
+		content:       body,
+		searchTitle:   normalize(title),
+		searchSummary: normalize(summary),
+		searchContent: normalize(body),
+		path:          path,
+		frontmatter:   frontmatter,
 	}, nil
 }
 

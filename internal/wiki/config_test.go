@@ -39,6 +39,40 @@ func TestLoadConfigNormalizesResources(t *testing.T) {
 	}
 }
 
+func TestLoadConfigNormalizesSearchTokenizer(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "wiki"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "wiki.json")
+	raw := `{"mode":"local","local":{"root":".","tokenizer":" GSE "}}`
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Local.Tokenizer != SearchTokenizerGSE {
+		t.Fatalf("tokenizer = %q, want %q", cfg.Local.Tokenizer, SearchTokenizerGSE)
+	}
+}
+
+func TestLoadConfigRejectsUnsupportedSearchTokenizer(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "wiki"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "wiki.json")
+	raw := `{"mode":"local","local":{"root":".","tokenizer":"unknown"}}`
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadConfig(path); err == nil {
+		t.Fatal("LoadConfig accepted unsupported local tokenizer")
+	}
+}
+
 func TestLoadConfigNormalizesResourceLinkBaseURL(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(dir, "wiki"), 0o700); err != nil {
@@ -177,6 +211,9 @@ func TestLoadConfigLocalResolvesRelativeRoot(t *testing.T) {
 	}
 	if cfg.Local.DefaultCategory != "topics" {
 		t.Fatalf("default_category = %q, want topics", cfg.Local.DefaultCategory)
+	}
+	if cfg.Local.Tokenizer != SearchTokenizerBuiltin {
+		t.Fatalf("tokenizer = %q, want %q", cfg.Local.Tokenizer, SearchTokenizerBuiltin)
 	}
 }
 

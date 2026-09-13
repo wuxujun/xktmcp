@@ -8,6 +8,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/wuxujun/xktmcp/internal/model"
 )
 
 // Pause a refresh at its first cancellation check, after directory traversal starts.
@@ -16,6 +18,193 @@ type pausedRefreshContext struct {
 	once    sync.Once
 	entered chan struct{}
 	release chan struct{}
+}
+
+func TestScoreDocumentUsesPreparedSearchFields(t *testing.T) {
+	doc := localDocument{
+		result:        model.WikiSearchResult{Title: "Go Concurrency", Summary: "Channel"},
+		content:       "unprepared content",
+		searchTitle:   "go concurrency",
+		searchSummary: "channel",
+		searchContent: "context cancellation",
+	}
+	if got := scoreDocument(doc, "context", []string{"context"}); got != 1 {
+		t.Fatalf("scoreDocument = %d, want 1 from prepared search fields", got)
+	}
+}
+
+func TestScoreDocumentGSEPhraseMatchRanksAboveSplitTerms(t *testing.T) {
+	terms := []string{"北京", "大学"}
+	phraseDoc := localDocument{
+		tokenized:     true,
+		searchSummary: "北京大学招生",
+		searchContent: "北京大学招生简章",
+		summaryTerms:  terms,
+		contentTerms:  append(append([]string{}, terms...), "招生", "简章"),
+	}
+	splitDoc := localDocument{
+		tokenized:     true,
+		searchSummary: "北京的大学招生",
+		searchContent: "北京的大学招生简章",
+		summaryTerms:  terms,
+		contentTerms:  append(append([]string{}, terms...), "招生", "简章"),
+	}
+	phraseScore := scoreDocument(phraseDoc, "北京大学", terms)
+	splitScore := scoreDocument(splitDoc, "北京大学", terms)
+	if phraseScore <= splitScore {
+		t.Fatalf("phrase score = %d, split score = %d; complete phrase should rank higher", phraseScore, splitScore)
+	}
+	builtinPhraseDoc := phraseDoc
+	builtinPhraseDoc.tokenized = false
+	builtinSplitDoc := splitDoc
+	builtinSplitDoc.tokenized = false
+	if got, want := scoreDocument(builtinPhraseDoc, "北京大学", terms), scoreDocument(builtinSplitDoc, "北京大学", terms); got != want {
+		t.Fatalf("builtin phrase score = %d, split score = %d; builtin ranking must remain unchanged", got, want)
+	}
+}
+
+func TestSelectTopKPreservesWikiOrderingAndStableTies(t *testing.T) {
+	matches := []wikiMatch{
+		{result: model.WikiSearchResult{PageID: "first", Title: "Z", Score: 10, UpdatedAt: "2026-09-01"}, order: 0},
+		{result: model.WikiSearchResult{PageID: "second", Title: "A", Score: 10, UpdatedAt: "2026-09-01"}, order: 1},
+		{result: model.WikiSearchResult{PageID: "third", Title: "A", Score: 10, UpdatedAt: "2026-09-01"}, order: 2},
+		{result: model.WikiSearchResult{PageID: "fourth", Title: "Newest", Score: 11, UpdatedAt: "2026-09-02"}, order: 3},
+		{result: model.WikiSearchResult{PageID: "fifth", Title: "Older", Score: 9, UpdatedAt: "2026-09-03"}, order: 4},
+	}
+	got := selectTopK(matches, 3)
+	if len(got) != 3 {
+		t.Fatalf("selected %d matches, want 3", len(got))
+	}
+	want := []string{"fourth", "second", "third"}
+	for i, pageID := range want {
+		if got[i].result.PageID != pageID {
+			t.Errorf("selected[%d] = %q, want %q", i, got[i].result.PageID, pageID)
+		}
+	}
+}
+
+func TestTermIndexCandidatesReturnUnionInDocumentOrder(t *testing.T) {
+	documents := []localDocument{
+		{tokenized: true, titleTerms: []string{"go", "搜索"}, contentTerms: []string{"并发"}},
+		{tokenized: true, summaryTerms: []string{"搜索"}},
+		{tokenized: true, contentTerms: []string{"缓存"}},
+	}
+	index := buildTermIndex(documents)
+	got := termIndexCandidates(index, []string{"缓存", "搜索"})
+	want := []int{0, 1, 2}
+	if len(got) != len(want) {
+		t.Fatalf("candidate indexes = %v, want %v", got, want)
+	}
+	for i, index := range want {
+		if got[i] != index {
+			t.Errorf("candidate indexes[%d] = %d, want %d", i, got[i], index)
+		}
+	}
+}
+
+func TestLocalSearcherGSERefreshRebuildsTermIndex(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "wiki")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "fruit.md")
+	if err := os.WriteFile(path, []byte("---\ntitle: Fruit\n---\n苹果"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	searcher, err := NewLocalSearcher(LocalConfig{
+		Root: root, ContentDirs: []string{"wiki"}, Tokenizer: SearchTokenizerGSE,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := termIndexCandidates(searcher.termIndex, []string{"苹果"}); len(got) != 1 || got[0] != 0 {
+		t.Fatalf("initial apple candidates = %v, want [0]", got)
+	}
+	if err := os.WriteFile(path, []byte("---\ntitle: Fruit\n---\n香蕉"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := searcher.refresh(context.Background(), true); err != nil {
+		t.Fatal(err)
+	}
+	if got := termIndexCandidates(searcher.termIndex, []string{"苹果"}); len(got) != 0 {
+		t.Fatalf("stale apple candidates = %v, want none", got)
+	}
+	if got := termIndexCandidates(searcher.termIndex, []string{"香蕉"}); len(got) != 1 || got[0] != 0 {
+		t.Fatalf("refreshed banana candidates = %v, want [0]", got)
+	}
+}
+
+func TestLocalSearcherTopKPreservesSearchOrdering(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "wiki")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	articles := map[string]string{
+		"page-a.md": "---\ntitle: Zulu\nupdated: 2026-09-01\n---\nneedle",
+		"page-b.md": "---\ntitle: Alpha\nupdated: 2026-09-01\n---\nneedle",
+		"page-c.md": "---\ntitle: Alpha\nupdated: 2026-09-01\n---\nneedle",
+		"page-d.md": "---\ntitle: Newest\nupdated: 2026-09-02\n---\nneedle",
+	}
+	for name, content := range articles {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	searcher, err := NewLocalSearcher(LocalConfig{Root: root, ContentDirs: []string{"wiki"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := searcher.SearchWiki(context.Background(), "", "needle", "", 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"wiki/page-d", "wiki/page-b", "wiki/page-c"}
+	if len(results) != len(want) {
+		t.Fatalf("results = %+v, want %d results", results, len(want))
+	}
+	for i, pageID := range want {
+		if results[i].PageID != pageID {
+			t.Errorf("results[%d].PageID = %q, want %q", i, results[i].PageID, pageID)
+		}
+	}
+}
+
+func TestLocalSearcherGSEMatchesSegmentedChineseQuery(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "wiki")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	article := "---\ntitle: 大学课程\n---\n北京的大学提供课程"
+	if err := os.WriteFile(filepath.Join(dir, "university.md"), []byte(article), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	builtinSearcher, err := NewLocalSearcher(LocalConfig{Root: root, ContentDirs: []string{"wiki"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	builtinResults, err := builtinSearcher.SearchWiki(context.Background(), "", "北京大学", "", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(builtinResults) != 0 {
+		t.Fatalf("builtin results = %+v, want contiguous Chinese query to miss split terms", builtinResults)
+	}
+	searcher, err := NewLocalSearcher(LocalConfig{
+		Root: root, ContentDirs: []string{"wiki"}, Tokenizer: SearchTokenizerGSE,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := searcher.SearchWiki(context.Background(), "", "北京大学", "", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || results[0].PageID != "wiki/university" {
+		t.Fatalf("results = %+v, want segmented Chinese query to match article", results)
+	}
 }
 
 func (c *pausedRefreshContext) Err() error {

@@ -15,6 +15,11 @@ const (
 	ModeHTTP  = "http"
 	ModeLocal = "local"
 
+	SearchTokenizerBuiltin = "builtin"
+	SearchTokenizerGSE     = "gse"
+	GSEDictionaryZH        = "zh"
+	GSEDictionaryZHS       = "zh_s"
+
 	DefaultMaxCatalogEntries = 1000
 	MaxCatalogEntriesLimit   = 10000
 )
@@ -41,6 +46,8 @@ type LocalConfig struct {
 	DefaultCategory        string                 `json:"default_category"`
 	RefreshIntervalSeconds int                    `json:"refresh_interval_seconds"`
 	MaxFileSizeBytes       int64                  `json:"max_file_size_bytes"`
+	Tokenizer              string                 `json:"tokenizer,omitempty"`
+	GSEDictionary          string                 `json:"gse_dictionary,omitempty"`
 	Users                  map[string]LocalConfig `json:"users,omitempty"`
 	RequireUserMapping     bool                   `json:"require_user_mapping,omitempty"`
 }
@@ -209,7 +216,30 @@ func normalizeLocalDirectory(cfg *LocalConfig, configDir, fieldPrefix string) er
 	if cfg.MaxFileSizeBytes <= 0 {
 		cfg.MaxFileSizeBytes = 2 << 20
 	}
+	cfg.Tokenizer = strings.ToLower(strings.TrimSpace(cfg.Tokenizer))
+	if cfg.Tokenizer == "" {
+		cfg.Tokenizer = SearchTokenizerBuiltin
+	}
+	if cfg.Tokenizer != SearchTokenizerBuiltin && cfg.Tokenizer != SearchTokenizerGSE {
+		return fmt.Errorf("%s.tokenizer %q is unsupported (want %q or %q)", fieldPrefix, cfg.Tokenizer, SearchTokenizerBuiltin, SearchTokenizerGSE)
+	}
+	dictionary, err := normalizeGSEDictionary(cfg.GSEDictionary)
+	if err != nil {
+		return fmt.Errorf("%s.gse_dictionary: %w", fieldPrefix, err)
+	}
+	cfg.GSEDictionary = dictionary
 	return nil
+}
+
+func normalizeGSEDictionary(value string) (string, error) {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		value = GSEDictionaryZH
+	}
+	if value != GSEDictionaryZH && value != GSEDictionaryZHS {
+		return "", fmt.Errorf("unsupported dictionary %q (want %q or %q)", value, GSEDictionaryZH, GSEDictionaryZHS)
+	}
+	return value, nil
 }
 
 func cleanRelativePath(value, field string) (string, error) {

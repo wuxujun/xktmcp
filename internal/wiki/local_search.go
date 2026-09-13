@@ -1,6 +1,7 @@
 package wiki
 
 import (
+	"container/heap"
 	"context"
 	"fmt"
 	"io/fs"
@@ -16,10 +17,42 @@ import (
 )
 
 type localDocument struct {
-	result      model.WikiSearchResult
-	content     string
-	path        string
-	frontmatter map[string]string
+	result        model.WikiSearchResult
+	content       string
+	searchTitle   string
+	searchSummary string
+	searchContent string
+	tokenized     bool
+	titleTerms    []string
+	summaryTerms  []string
+	contentTerms  []string
+	path          string
+	frontmatter   map[string]string
+}
+
+type wikiMatch struct {
+	result model.WikiSearchResult
+	order  int
+}
+
+type wikiMatchHeap []wikiMatch
+
+func (h wikiMatchHeap) Len() int { return len(h) }
+
+func (h wikiMatchHeap) Less(i, j int) bool {
+	return wikiMatchBetter(h[j], h[i])
+}
+
+func (h wikiMatchHeap) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
+
+func (h *wikiMatchHeap) Push(value any) { *h = append(*h, value.(wikiMatch)) }
+
+func (h *wikiMatchHeap) Pop() any {
+	old := *h
+	n := len(old)
+	value := old[n-1]
+	*h = old[:n-1]
+	return value
 }
 
 // LocalSearcher 对 llm-wiki 编译后的 Markdown 文章建立轻量内存索引。
@@ -29,6 +62,8 @@ type LocalSearcher struct {
 	mu          sync.RWMutex
 	writeMu     sync.Mutex
 	refreshMu   sync.Mutex
+	tokenizer   searchTokenizer
+	termIndex   map[string][]int
 	documents   []localDocument
 	backlinks   map[string][]model.WikiBacklink
 	nextRefresh time.Time
@@ -38,7 +73,11 @@ func NewLocalSearcher(cfg LocalConfig) (*LocalSearcher, error) {
 	if err := normalizeLocalConfig(&cfg, "."); err != nil {
 		return nil, err
 	}
-	s := &LocalSearcher{cfg: cfg}
+	tokenizer, err := newSearchTokenizerWithDictionary(cfg.Tokenizer, cfg.GSEDictionary)
+	if err != nil {
+		return nil, err
+	}
+	s := &LocalSearcher{cfg: cfg, tokenizer: tokenizer}
 	if err := s.refresh(context.Background(), true); err != nil {
 		return nil, err
 	}
@@ -60,43 +99,72 @@ func (s *LocalSearcher) SearchWiki(ctx context.Context, _ string, query, categor
 	if query == "" {
 		return nil, nil
 	}
+	terms := s.tokenizer.Terms(query)
 	if topK <= 0 {
 		topK = 5
 	}
 
 	s.mu.RLock()
-	matches := make([]model.WikiSearchResult, 0, topK)
-	for _, doc := range s.documents {
+	matches := make([]wikiMatch, 0, topK)
+	order := 0
+	appendMatch := func(index int) error {
 		if err := ctx.Err(); err != nil {
-			s.mu.RUnlock()
-			return nil, err
+			return err
 		}
+		doc := s.documents[index]
 		if category != "" && normalize(doc.result.Category) != category {
-			continue
+			return nil
 		}
-		score := scoreDocument(doc, query)
+		score := scoreDocument(doc, query, terms)
 		if score <= 0 {
-			continue
+			return nil
 		}
 		result := doc.result
 		result.Score = float32(score)
-		matches = append(matches, result)
+		matches = append(matches, wikiMatch{result: result, order: order})
+		order++
+		return nil
+	}
+	candidates := termIndexCandidates(s.termIndex, terms)
+	if candidates == nil {
+		for index := range s.documents {
+			if err := appendMatch(index); err != nil {
+				s.mu.RUnlock()
+				return nil, err
+			}
+		}
+	} else {
+		// Phrase scores can match even when segmentation produced no shared
+		// term. Merge these matches in document order to preserve stable ties.
+		next := 0
+		for index, doc := range s.documents {
+			if err := ctx.Err(); err != nil {
+				s.mu.RUnlock()
+				return nil, err
+			}
+			candidate := next < len(candidates) && candidates[next] == index
+			if candidate {
+				next++
+			}
+			phrase := !candidate && (strings.Contains(doc.searchTitle, query) ||
+				(doc.tokenized && len(terms) > 1 &&
+					(strings.Contains(doc.searchSummary, query) || strings.Contains(doc.searchContent, query))))
+			if candidate || phrase {
+				if err := appendMatch(index); err != nil {
+					s.mu.RUnlock()
+					return nil, err
+				}
+			}
+		}
 	}
 	s.mu.RUnlock()
 
-	sort.SliceStable(matches, func(i, j int) bool {
-		if matches[i].Score != matches[j].Score {
-			return matches[i].Score > matches[j].Score
-		}
-		if matches[i].UpdatedAt != matches[j].UpdatedAt {
-			return matches[i].UpdatedAt > matches[j].UpdatedAt
-		}
-		return matches[i].Title < matches[j].Title
-	})
-	if len(matches) > topK {
-		matches = matches[:topK]
+	selected := selectTopK(matches, topK)
+	results := make([]model.WikiSearchResult, len(selected))
+	for i, match := range selected {
+		results[i] = match.result
 	}
-	return matches, nil
+	return results, nil
 }
 
 func (s *LocalSearcher) refresh(ctx context.Context, force bool) error {
@@ -115,9 +183,19 @@ func (s *LocalSearcher) refresh(ctx context.Context, force bool) error {
 	defer s.refreshMu.Unlock()
 	s.mu.RLock()
 	fresh = time.Now().Before(s.nextRefresh)
+	previous := s.documents
 	s.mu.RUnlock()
 	if !force && fresh {
 		return nil
+	}
+	// Published documents and term slices are immutable. Only keep references
+	// for this refresh; removed documents disappear with the next snapshot.
+	var reusable map[string]*localDocument
+	if s.tokenizer != nil && s.tokenizer.UsesTokenBoundaries() {
+		reusable = make(map[string]*localDocument, len(previous))
+		for i := range previous {
+			reusable[previous[i].path] = &previous[i]
+		}
 	}
 
 	documents := make([]localDocument, 0)
@@ -161,6 +239,16 @@ func (s *LocalSearcher) refresh(ctx context.Context, force bool) error {
 			if err != nil {
 				return err
 			}
+			old := reusable[path]
+			if old != nil && old.tokenized && old.result.Title == doc.result.Title &&
+				old.result.Summary == doc.result.Summary && old.content == doc.content {
+				doc.tokenized = true
+				doc.titleTerms = old.titleTerms
+				doc.summaryTerms = old.summaryTerms
+				doc.contentTerms = old.contentTerms
+			} else {
+				s.prepareDocument(&doc)
+			}
 			seen[path] = struct{}{}
 			documents = append(documents, doc)
 			return nil
@@ -174,25 +262,153 @@ func (s *LocalSearcher) refresh(ctx context.Context, force bool) error {
 	if err != nil {
 		return err
 	}
+	termIndex := buildTermIndex(documents)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.documents = documents
 	s.backlinks = backlinks
+	s.termIndex = termIndex
 	s.nextRefresh = time.Now().Add(s.cfg.RefreshInterval())
 	return nil
 }
 
-func scoreDocument(doc localDocument, query string) int {
-	title := normalize(doc.result.Title)
-	summary := normalize(doc.result.Summary)
-	content := normalize(doc.content)
+func (s *LocalSearcher) prepareDocument(doc *localDocument) {
+	if s.tokenizer == nil || !s.tokenizer.UsesTokenBoundaries() {
+		return
+	}
+	doc.tokenized = true
+	doc.titleTerms = s.tokenizer.Terms(doc.result.Title)
+	doc.summaryTerms = s.tokenizer.Terms(doc.result.Summary)
+	doc.contentTerms = s.tokenizer.ContentTerms(doc.content)
+	// Published GSE fields are sorted once; scoring can then use binary lookup.
+	sort.Strings(doc.titleTerms)
+	sort.Strings(doc.summaryTerms)
+	sort.Strings(doc.contentTerms)
+}
+
+func buildTermIndex(documents []localDocument) map[string][]int {
+	var index map[string][]int
+	for docIndex, doc := range documents {
+		if !doc.tokenized {
+			continue
+		}
+		seen := make(map[string]struct{}, len(doc.titleTerms)+len(doc.summaryTerms)+len(doc.contentTerms))
+		addTerms := func(terms []string) {
+			for _, term := range terms {
+				if term == "" {
+					continue
+				}
+				if _, ok := seen[term]; ok {
+					continue
+				}
+				seen[term] = struct{}{}
+				if index == nil {
+					index = make(map[string][]int)
+				}
+				index[term] = append(index[term], docIndex)
+			}
+		}
+		addTerms(doc.titleTerms)
+		addTerms(doc.summaryTerms)
+		addTerms(doc.contentTerms)
+	}
+	return index
+}
+
+func termIndexCandidates(index map[string][]int, terms []string) []int {
+	if len(index) == 0 || len(terms) == 0 {
+		return nil
+	}
+	seen := make(map[int]struct{})
+	for _, term := range terms {
+		for _, docIndex := range index[term] {
+			seen[docIndex] = struct{}{}
+		}
+	}
+	if len(seen) == 0 {
+		return nil
+	}
+	candidates := make([]int, 0, len(seen))
+	for docIndex := range seen {
+		candidates = append(candidates, docIndex)
+	}
+	sort.Ints(candidates)
+	return candidates
+}
+
+func wikiMatchBetter(a, b wikiMatch) bool {
+	if a.result.Score != b.result.Score {
+		return a.result.Score > b.result.Score
+	}
+	if a.result.UpdatedAt != b.result.UpdatedAt {
+		return a.result.UpdatedAt > b.result.UpdatedAt
+	}
+	if a.result.Title != b.result.Title {
+		return a.result.Title < b.result.Title
+	}
+	return a.order < b.order
+}
+
+func selectTopK(matches []wikiMatch, topK int) []wikiMatch {
+	if topK <= 0 || len(matches) == 0 {
+		return matches
+	}
+	if len(matches) <= topK {
+		sort.SliceStable(matches, func(i, j int) bool { return wikiMatchBetter(matches[i], matches[j]) })
+		return matches
+	}
+
+	candidates := make(wikiMatchHeap, 0, topK)
+	for _, match := range matches {
+		if len(candidates) < topK {
+			heap.Push(&candidates, match)
+			continue
+		}
+		if wikiMatchBetter(match, candidates[0]) {
+			candidates[0] = match
+			heap.Fix(&candidates, 0)
+		}
+	}
+	sort.SliceStable(candidates, func(i, j int) bool { return wikiMatchBetter(candidates[i], candidates[j]) })
+	return candidates
+}
+
+const (
+	gseSummaryPhraseBonus = 6
+	gseContentPhraseBonus = 8
+)
+
+func scoreDocument(doc localDocument, query string, terms []string) int {
+	title := doc.searchTitle
+	summary := doc.searchSummary
+	content := doc.searchContent
 	score := 0
 	if title == query {
 		score += 100
 	} else if strings.Contains(title, query) {
 		score += 40
 	}
-	for _, term := range queryTerms(query) {
+	if doc.tokenized && len(terms) > 1 {
+		if strings.Contains(summary, query) {
+			score += gseSummaryPhraseBonus
+		}
+		if strings.Contains(content, query) {
+			score += gseContentPhraseBonus
+		}
+	}
+	for _, term := range terms {
+		if doc.tokenized {
+			if containsSearchTerm(doc.titleTerms, term) {
+				score += 20
+			}
+			if containsSearchTerm(doc.summaryTerms, term) {
+				score += 10
+			}
+			if count := countSearchTerm(doc.contentTerms, term); count > 0 {
+				score += min(count, 10)
+			}
+			continue
+		}
 		if strings.Contains(title, term) {
 			score += 20
 		}
@@ -204,6 +420,38 @@ func scoreDocument(doc localDocument, query string) int {
 		}
 	}
 	return score
+}
+
+func containsSearchTerm(terms []string, want string) bool {
+	return countSearchTerm(terms, want) > 0
+}
+
+func countSearchTerm(terms []string, want string) int {
+	// For small fields a linear scan avoids binary-search comparison overhead.
+	if len(terms) <= 32 {
+		count := 0
+		for _, term := range terms {
+			if term == want {
+				count++
+			}
+		}
+		return count
+	}
+	// terms must be sorted, as established by prepareDocument.
+	start := sort.SearchStrings(terms, want)
+	if start == len(terms) || terms[start] != want {
+		return 0
+	}
+	// Most title/summary terms are unique; avoid another search for those.
+	next := start + 1
+	if next == len(terms) || terms[next] != want {
+		return 1
+	}
+	// Body terms retain frequency. Find the upper bound without scanning
+	// every occurrence of a common word in a long document.
+	return 1 + sort.Search(len(terms)-next, func(i int) bool {
+		return terms[next+i] > want
+	})
 }
 
 func normalize(value string) string {
