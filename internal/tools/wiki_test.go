@@ -1,16 +1,19 @@
 package tools
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/wuxujun/xktmcp/internal/client"
+	"github.com/wuxujun/xktmcp/internal/logger"
 	"github.com/wuxujun/xktmcp/internal/model"
 	"github.com/wuxujun/xktmcp/internal/service"
 )
@@ -111,6 +114,33 @@ func TestWikiSearchHandlerCacheSeparatesQueryFields(t *testing.T) {
 	}
 	if requests.Load() != 2 {
 		t.Fatalf("backend requests = %d, want 2 (normalized request should hit cache)", requests.Load())
+	}
+}
+
+func TestWikiSearchHandlerCacheHitMasksQueryInLog(t *testing.T) {
+	oldCache := wikiCache
+	wikiCache = NewMemoryCacheWithOptions(16, 0)
+	t.Cleanup(func() { wikiCache.Stop(); wikiCache = oldCache })
+	ts, svc := setupWikiToolsTest(t)
+	defer ts.Close()
+
+	var logs bytes.Buffer
+	logger.Init(&logs)
+	handler := WikiSearchHandler(svc, "")
+	args := WikiSearchArgs{Query: "13812345678", TopK: 5}
+	if _, _, err := handler(context.Background(), nil, args); err != nil {
+		t.Fatal(err)
+	}
+	logs.Reset()
+	if _, _, err := handler(context.Background(), nil, args); err != nil {
+		t.Fatal(err)
+	}
+	output := logs.String()
+	if strings.Contains(output, args.Query) {
+		t.Fatalf("cache-hit log contains raw query %q: %s", args.Query, output)
+	}
+	if !strings.Contains(output, "138****5678") {
+		t.Fatalf("cache-hit log does not contain masked query: %s", output)
 	}
 }
 

@@ -175,7 +175,7 @@ func WikiSearchHandler(
 		cacheKey := wikiSearchCachePrefix(userID) + string(fields)
 		if val, ok := wikiCache.Get(cacheKey); ok {
 			cached := val.(toolResultItem)
-			logger.InfofCtx(ctx, "[Cache] wiki_search hit cache: query=%s", args.Query)
+			logger.InfofCtx(ctx, "[Cache] wiki_search hit cache: query=%s", pii.MaskSubject(query))
 			metrics.ObserveCacheAccess("wiki_search", true)
 			return cached.result, cached.data, nil
 		}
