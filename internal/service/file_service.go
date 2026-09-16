@@ -14,22 +14,69 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
+	"unicode"
 	"unicode/utf8"
 
+	"github.com/go-ego/gse"
 	"github.com/wuxujun/xktmcp/internal/model"
 )
 
 const maxSearchFileBytes = 2 * 1024 * 1024
+
+const (
+	FileSearchTokenizerBuiltin = "builtin"
+	FileSearchTokenizerGSE     = "gse"
+	FileSearchGSEDictionaryZH  = "zh"
+	FileSearchGSEDictionaryZHS = "zh_s"
+)
 
 var (
 	ErrInvalidFileSearchScope = errors.New("search_in must be all, title or content")
 	ErrFileSearchQueryTooLong = errors.New("query must not exceed 256 characters")
 )
 
+// FileSearchOptions controls the matching strategy used by file_search.
+// The zero value preserves the original continuous-text matching behavior.
+type FileSearchOptions struct {
+	Tokenizer     string
+	GSEDictionary string
+}
+
+type fileSearchTokenizer interface {
+	Terms(string) []string
+	ContentTerms(string) []string
+}
+
+type fileSearchDocument struct {
+	name         string
+	title        string
+	content      string
+	lowerName    string
+	lowerTitle   string
+	lowerContent string
+	size         int64
+	modTime      int64
+	metadata     string
+	searchable   bool
+	nameTerms    []string
+	titleTerms   []string
+	contentTerms []string
+}
+
+type fileSearchIndex struct {
+	files     map[string]fileSearchDocument
+	paths     []string
+	termIndex map[string][]string
+}
+
 // FileService searches a shared, administrator-configured directory on demand.
 // No caller-supplied value is used to select or construct the root directory.
 type FileService struct {
-	root string
+	root      string
+	tokenizer fileSearchTokenizer
+	indexMu   chan struct{}
+	index     *fileSearchIndex
 }
 
 func (s *FileService) SearchFileNames(ctx context.Context, query string, useRegex bool, limit int) ([]model.FileNameSearchResult, error) {
@@ -276,6 +323,10 @@ func cleanFilePath(value string) (string, error) {
 }
 
 func NewFileService(root string) (*FileService, error) {
+	return NewFileServiceWithOptions(root, FileSearchOptions{})
+}
+
+func NewFileServiceWithOptions(root string, options FileSearchOptions) (*FileService, error) {
 	root = strings.TrimSpace(root)
 	if root == "" {
 		return nil, errors.New("file search root must not be empty")
@@ -291,7 +342,11 @@ func NewFileService(root string) (*FileService, error) {
 	if err := dir.Close(); err != nil {
 		return nil, fmt.Errorf("close file search root: %w", err)
 	}
-	return &FileService{root: abs}, nil
+	tokenizer, err := newFileSearchTokenizer(options.Tokenizer, options.GSEDictionary)
+	if err != nil {
+		return nil, err
+	}
+	return &FileService{root: abs, tokenizer: tokenizer, indexMu: make(chan struct{}, 1)}, nil
 }
 
 func (s *FileService) Search(ctx context.Context, query, searchIn string, limit int) ([]model.FileSearchResult, error) {
@@ -316,6 +371,9 @@ func (s *FileService) Search(ctx context.Context, query, searchIn string, limit 
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
+	}
+	if s.tokenizer != nil {
+		return s.searchTokenized(ctx, query, searchIn, limit)
 	}
 	root, err := os.OpenRoot(s.root)
 	if err != nil {
@@ -405,6 +463,405 @@ func (s *FileService) Search(ctx context.Context, query, searchIn string, limit 
 	return items, nil
 }
 
+func newFileSearchTokenizer(name, dictionary string) (fileSearchTokenizer, error) {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if name == "" {
+		name = FileSearchTokenizerBuiltin
+	}
+	switch name {
+	case FileSearchTokenizerBuiltin:
+		return nil, nil
+	case FileSearchTokenizerGSE:
+		dictionary, err := normalizeFileSearchGSEDictionary(dictionary)
+		if err != nil {
+			return nil, err
+		}
+		segmenter, err := sharedFileGSESegmenter(dictionary)
+		if err != nil {
+			return nil, fmt.Errorf("load file search gse dictionary: %w", err)
+		}
+		return &fileGSESearchTokenizer{segmenter: segmenter}, nil
+	default:
+		return nil, fmt.Errorf("unsupported file search tokenizer %q (want %q or %q)", name, FileSearchTokenizerBuiltin, FileSearchTokenizerGSE)
+	}
+}
+
+func normalizeFileSearchGSEDictionary(value string) (string, error) {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return FileSearchGSEDictionaryZH, nil
+	}
+	if value != FileSearchGSEDictionaryZH && value != FileSearchGSEDictionaryZHS {
+		return "", fmt.Errorf("unsupported file search gse dictionary %q (want %q or %q)", value, FileSearchGSEDictionaryZH, FileSearchGSEDictionaryZHS)
+	}
+	return value, nil
+}
+
+type fileGSESearchTokenizer struct {
+	mu        sync.Mutex
+	segmenter gse.Segmenter
+}
+
+type fileGSETemplateEntry struct {
+	once      sync.Once
+	segmenter gse.Segmenter
+	err       error
+}
+
+var fileGSEModelOnce sync.Once
+
+var fileGSETemplates = map[string]*fileGSETemplateEntry{
+	FileSearchGSEDictionaryZH:  {},
+	FileSearchGSEDictionaryZHS: {},
+}
+
+func sharedFileGSESegmenter(dictionary string) (gse.Segmenter, error) {
+	entry := fileGSETemplates[dictionary]
+	entry.once.Do(func() {
+		fileGSEModelOnce.Do(func() { entry.segmenter.LoadModel() })
+		entry.segmenter.NotLoadHMM = true
+		entry.segmenter.SkipLog = true
+		entry.err = entry.segmenter.LoadDictEmbed(dictionary)
+	})
+	if entry.err != nil {
+		return gse.Segmenter{}, entry.err
+	}
+	return entry.segmenter, nil
+}
+
+func (t *fileGSESearchTokenizer) Terms(text string) []string {
+	return t.terms(text, true)
+}
+
+func (t *fileGSESearchTokenizer) ContentTerms(text string) []string {
+	return t.terms(text, false)
+}
+
+func (t *fileGSESearchTokenizer) terms(text string, unique bool) []string {
+	text = strings.ToLower(strings.TrimSpace(text))
+	if text == "" {
+		return nil
+	}
+
+	t.mu.Lock()
+	words := t.segmenter.CutSearch(text, true)
+	t.mu.Unlock()
+
+	terms := make([]string, 0, len(words)+4)
+	var seen map[string]struct{}
+	if unique {
+		seen = make(map[string]struct{}, len(words)+4)
+	}
+	appendTerm := func(term string) {
+		term = strings.ToLower(strings.TrimSpace(term))
+		if term == "" || !isFileSearchTerm(term) {
+			return
+		}
+		if unique {
+			if _, ok := seen[term]; ok {
+				return
+			}
+			seen[term] = struct{}{}
+		}
+		terms = append(terms, term)
+	}
+	for _, word := range words {
+		appendTerm(word)
+	}
+	if len(terms) == 0 {
+		for _, term := range fileSearchQueryTerms(text) {
+			appendTerm(term)
+		}
+	}
+	return terms
+}
+
+func isFileSearchTerm(term string) bool {
+	for _, r := range term {
+		if unicode.IsLetter(r) || unicode.IsNumber(r) {
+			return true
+		}
+	}
+	return false
+}
+
+func fileSearchQueryTerms(query string) []string {
+	var terms []string
+	var current []rune
+	currentHan := false
+	flush := func() {
+		if len(current) > 0 {
+			terms = append(terms, string(current))
+			current = current[:0]
+		}
+	}
+	for _, r := range query {
+		if unicode.IsSpace(r) || unicode.IsPunct(r) || unicode.IsSymbol(r) {
+			flush()
+			continue
+		}
+		isHan := unicode.Is(unicode.Han, r)
+		if len(current) > 0 && isHan != currentHan {
+			flush()
+		}
+		currentHan = isHan
+		current = append(current, r)
+	}
+	flush()
+	if len(terms) == 0 {
+		return []string{query}
+	}
+	return terms
+}
+
+func (s *FileService) searchTokenized(ctx context.Context, query, searchIn string, limit int) ([]model.FileSearchResult, error) {
+	index, err := s.ensureFileSearchIndex(ctx)
+	if err != nil {
+		return nil, err
+	}
+	terms := s.tokenizer.Terms(query)
+	candidates := make(map[string]struct{})
+	addTermCandidates := func(terms []string) {
+		for _, term := range terms {
+			for _, name := range index.termIndex[term] {
+				candidates[name] = struct{}{}
+			}
+		}
+	}
+	if searchIn != "title" {
+		addTermCandidates(terms)
+	} else {
+		for _, term := range terms {
+			for _, name := range index.termIndex[term] {
+				doc := index.files[name]
+				if fileSearchTermIn(doc.nameTerms, term) || fileSearchTermIn(doc.titleTerms, term) {
+					candidates[name] = struct{}{}
+				}
+			}
+		}
+	}
+	for _, name := range index.paths {
+		doc := index.files[name]
+		if (searchIn != "content" && (strings.Contains(doc.lowerName, query) || strings.Contains(doc.lowerTitle, query))) ||
+			(searchIn != "title" && strings.Contains(doc.lowerContent, query)) {
+			candidates[name] = struct{}{}
+		}
+	}
+
+	items := make([]model.FileSearchResult, 0, limit)
+	for _, name := range index.paths {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if _, ok := candidates[name]; !ok {
+			continue
+		}
+		doc := index.files[name]
+		titleMatch, contentMatch := fileSearchDocumentMatches(doc, query, terms, searchIn)
+		if !titleMatch && !contentMatch {
+			continue
+		}
+		fields := make([]string, 0, 2)
+		if titleMatch {
+			fields = append(fields, "title")
+		}
+		if contentMatch {
+			fields = append(fields, "content")
+		}
+		item := model.FileSearchResult{
+			Path: name, Title: doc.title, Snippet: fileSearchSnippetWithTerms(doc.content, doc.lowerContent, query, terms),
+			MatchedFields: fields, SizeBytes: doc.size,
+		}
+		pos := sort.Search(len(items), func(i int) bool {
+			otherTitleMatch := items[i].MatchedFields[0] == "title"
+			if titleMatch != otherTitleMatch {
+				return titleMatch
+			}
+			return item.Path < items[i].Path
+		})
+		if pos < limit {
+			items = append(items, model.FileSearchResult{})
+			copy(items[pos+1:], items[pos:])
+			items[pos] = item
+			if len(items) > limit {
+				items = items[:limit]
+			}
+		}
+	}
+	return items, nil
+}
+
+func (s *FileService) ensureFileSearchIndex(ctx context.Context) (*fileSearchIndex, error) {
+	select {
+	case s.indexMu <- struct{}{}:
+		defer func() { <-s.indexMu }()
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+
+	root, err := os.OpenRoot(s.root)
+	if err != nil {
+		return nil, fmt.Errorf("open file search directory: %w", err)
+	}
+	defer root.Close()
+
+	previous := s.index
+	files := make(map[string]fileSearchDocument)
+	changed := previous == nil
+	err = fs.WalkDir(root.FS(), ".", func(name string, entry fs.DirEntry, walkErr error) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if walkErr != nil {
+			return walkErr
+		}
+		if name != "." && strings.HasPrefix(entry.Name(), ".") {
+			if entry.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if entry.IsDir() || !entry.Type().IsRegular() {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() || info.Size() > maxSearchFileBytes {
+			return nil
+		}
+		if previous != nil {
+			if old, ok := previous.files[name]; ok && old.size == info.Size() && old.modTime == info.ModTime().UnixNano() && old.metadata == fileSearchMetadata(info) {
+				files[name] = old
+				return nil
+			}
+		}
+		doc, ok, err := loadFileSearchDocument(root, name, info, s.tokenizer)
+		if err != nil {
+			return err
+		}
+		changed = true
+		if ok {
+			files[name] = doc
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("index local files: %w", err)
+	}
+	if previous != nil && len(files) != len(previous.files) {
+		changed = true
+	}
+	if !changed {
+		return previous, nil
+	}
+	index := buildFileSearchIndex(files)
+	s.index = index
+	return index, nil
+}
+
+func loadFileSearchDocument(root *os.Root, name string, info fs.FileInfo, tokenizer fileSearchTokenizer) (fileSearchDocument, bool, error) {
+	doc := fileSearchDocument{
+		name:       info.Name(),
+		title:      info.Name(),
+		size:       info.Size(),
+		modTime:    info.ModTime().UnixNano(),
+		metadata:   fileSearchMetadata(info),
+		searchable: true,
+	}
+	if searchableTextExtension(path.Ext(name)) {
+		data, err := readSearchFile(root, name)
+		if err != nil {
+			return fileSearchDocument{}, false, err
+		}
+		if data == nil || !utf8.Valid(data) || strings.IndexByte(string(data), 0) >= 0 {
+			doc.searchable = false
+			return doc, true, nil
+		}
+		doc.content = strings.TrimPrefix(string(data), "\ufeff")
+		if ext := strings.ToLower(path.Ext(name)); ext == ".md" || ext == ".markdown" {
+			doc.title = fileMarkdownTitle(doc.content, doc.title)
+		}
+	}
+	doc.lowerName = strings.ToLower(doc.name)
+	doc.lowerTitle = strings.ToLower(doc.title)
+	doc.lowerContent = strings.ToLower(doc.content)
+	doc.nameTerms = tokenizer.Terms(doc.name)
+	doc.titleTerms = tokenizer.Terms(doc.title)
+	doc.contentTerms = tokenizer.ContentTerms(doc.content)
+	sort.Strings(doc.nameTerms)
+	sort.Strings(doc.titleTerms)
+	sort.Strings(doc.contentTerms)
+	return doc, true, nil
+}
+
+func fileSearchMetadata(info fs.FileInfo) string {
+	return fmt.Sprintf("%#v", info.Sys())
+}
+
+func buildFileSearchIndex(files map[string]fileSearchDocument) *fileSearchIndex {
+	paths := make([]string, 0, len(files))
+	for name := range files {
+		paths = append(paths, name)
+	}
+	sort.Strings(paths)
+	index := &fileSearchIndex{files: files, paths: paths, termIndex: make(map[string][]string)}
+	for _, name := range paths {
+		doc := files[name]
+		if !doc.searchable {
+			continue
+		}
+		seen := make(map[string]struct{}, len(doc.nameTerms)+len(doc.titleTerms)+len(doc.contentTerms))
+		addTerms := func(terms []string) {
+			for _, term := range terms {
+				if term == "" {
+					continue
+				}
+				if _, ok := seen[term]; ok {
+					continue
+				}
+				seen[term] = struct{}{}
+				index.termIndex[term] = append(index.termIndex[term], name)
+			}
+		}
+		addTerms(doc.nameTerms)
+		addTerms(doc.titleTerms)
+		addTerms(doc.contentTerms)
+	}
+	return index
+}
+
+func fileSearchDocumentMatches(doc fileSearchDocument, query string, terms []string, searchIn string) (bool, bool) {
+	if !doc.searchable {
+		return false, false
+	}
+	titleMatch := false
+	if searchIn != "content" {
+		titleMatch = strings.Contains(doc.lowerName, query) || strings.Contains(doc.lowerTitle, query) ||
+			fileSearchHasAnyTerm(doc.nameTerms, terms) || fileSearchHasAnyTerm(doc.titleTerms, terms)
+	}
+	contentMatch := false
+	if searchIn != "title" {
+		contentMatch = strings.Contains(doc.lowerContent, query) || fileSearchHasAnyTerm(doc.contentTerms, terms)
+	}
+	return titleMatch, contentMatch
+}
+
+func fileSearchHasAnyTerm(terms, wants []string) bool {
+	for _, want := range wants {
+		if fileSearchTermIn(terms, want) {
+			return true
+		}
+	}
+	return false
+}
+
+func fileSearchTermIn(terms []string, want string) bool {
+	index := sort.SearchStrings(terms, want)
+	return index < len(terms) && terms[index] == want
+}
+
 func searchableTextExtension(ext string) bool {
 	switch strings.ToLower(ext) {
 	case ".md", ".markdown", ".txt", ".text", ".csv", ".json", ".yaml", ".yml", ".xml", ".html", ".htm":
@@ -462,11 +919,28 @@ func fileMarkdownTitle(content, fallback string) string {
 }
 
 func fileSearchSnippet(content, lowerContent, query string) string {
+	return fileSearchSnippetAt(content, lowerContent, strings.Index(lowerContent, query))
+}
+
+func fileSearchSnippetWithTerms(content, lowerContent, query string, terms []string) string {
+	index := strings.Index(lowerContent, query)
+	if index < 0 {
+		for _, term := range terms {
+			termIndex := strings.Index(lowerContent, term)
+			if termIndex >= 0 && (index < 0 || termIndex < index) {
+				index = termIndex
+			}
+		}
+	}
+	return fileSearchSnippetAt(content, lowerContent, index)
+}
+
+func fileSearchSnippetAt(content, lowerContent string, matchIndex int) string {
 	const maxRunes = 240
 	runes := []rune(content)
 	start := 0
-	if index := strings.Index(lowerContent, query); index >= 0 {
-		start = max(0, utf8.RuneCountInString(lowerContent[:index])-60)
+	if matchIndex >= 0 {
+		start = max(0, utf8.RuneCountInString(lowerContent[:matchIndex])-60)
 	}
 	end := min(len(runes), start+maxRunes)
 	snippet := string(runes[start:end])

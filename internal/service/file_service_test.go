@@ -122,6 +122,50 @@ func TestFileSearchLimitsSnippetAndRefresh(t *testing.T) {
 	}
 }
 
+func TestFileSearchGSERefreshesSameSizeFileWithRestoredModTime(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "guide.txt")
+	if err := os.WriteFile(path, []byte("北京大学"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc, err := NewFileServiceWithOptions(root, FileSearchOptions{Tokenizer: FileSearchTokenizerGSE})
+	if err != nil {
+		t.Fatal(err)
+	}
+	items, err := svc.Search(context.Background(), "北京大学", "content", 20)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("initial GSE search=%+v err=%v", items, err)
+	}
+	if err := os.WriteFile(path, []byte("上海学院"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(path, info.ModTime(), info.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	items, err = svc.Search(context.Background(), "北京大学", "content", 20)
+	if err != nil || len(items) != 0 {
+		t.Fatalf("same-size refreshed GSE search=%+v err=%v, want no stale result", items, err)
+	}
+}
+
+func TestFileSearchGSESnippetCentersOnSegmentedMatch(t *testing.T) {
+	root := t.TempDir()
+	content := strings.Repeat("前文。", 120) + "北京的大学提供课程" + strings.Repeat("后文。", 120)
+	writeSearchFile(t, root, "guide.txt", content)
+	svc, err := NewFileServiceWithOptions(root, FileSearchOptions{Tokenizer: FileSearchTokenizerGSE})
+	if err != nil {
+		t.Fatal(err)
+	}
+	items, err := svc.Search(context.Background(), "北京大学", "content", 20)
+	if err != nil || len(items) != 1 || !strings.Contains(items[0].Snippet, "北京的大学") {
+		t.Fatalf("segmented snippet=%+v err=%v, want snippet around match", items, err)
+	}
+}
+
 func TestFileSearchValidationAndCancellation(t *testing.T) {
 	for _, root := range []string{"", filepath.Join(t.TempDir(), "missing")} {
 		if _, err := NewFileService(root); err == nil {

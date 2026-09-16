@@ -27,7 +27,7 @@ func (a FilePreviewArgs) AuditSubject() string { return a.Path }
 
 type FileSearchArgs struct {
 	CommonArgs
-	Query    string `json:"query" jsonschema:"文件标题、文件名或正文中的关键词，最长 256 个字符；不区分大小写的连续文本匹配"`
+	Query    string `json:"query" jsonschema:"文件标题、文件名或正文中的关键词，最长 256 个字符；匹配方式由 FILE_SEARCH_TOKENIZER 配置"`
 	SearchIn string `json:"search_in,omitempty" jsonschema:"搜索范围：all（标题及正文，默认）、title（标题或文件名）、content（正文）"`
 	Limit    int    `json:"limit,omitempty" jsonschema:"最多返回的文件数量，默认 20，最大 100"`
 }
@@ -43,7 +43,7 @@ func FileSearchTool() *mcp.Tool {
 	schema.Properties["search_in"].Enum = []any{"all", "title", "content"}
 	return &mcp.Tool{
 		Name:        "file_search",
-		Description: "搜索服务器预先配置目录中的文件。支持文件名、Markdown 一级标题及 UTF-8 文本正文搜索，返回相对路径、标题、命中摘要和命中字段。标题命中优先。不会读取任意指定路径。",
+		Description: "搜索服务器预先配置目录中的文件。支持文件名、Markdown 一级标题及 UTF-8 文本正文搜索；匹配方式由 FILE_SEARCH_TOKENIZER 配置（builtin 连续文本或 gse 中文分词）。返回相对路径、标题、命中摘要和命中字段。标题命中优先。不会读取任意指定路径。",
 		InputSchema: schema, OutputSchema: outputSchema[FileSearchResponse](),
 	}
 }

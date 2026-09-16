@@ -38,6 +38,8 @@ FILE_SEARCH_ROOT=/srv/searchable-files MCP_ENABLED_TOOLS=file_search go run ./cm
 
 此模式不需要 `API_TOKEN`、`BASE_URL` 或 Wiki 配置。与其他工具一起运行时，设置 `FILE_SEARCH_ROOT` 并将文件工具加入现有 `MCP_ENABLED_TOOLS` 列表；未设置工具列表时会随现有工具一起注册。显式启用但未配置目录、或目录无法打开时，启动会报错。
 
+`file_search` 默认使用 `builtin` 连续文本匹配。设置 `FILE_SEARCH_TOKENIZER=gse` 可启用 GSE 中文分词；`FILE_SEARCH_GSE_DICTIONARY` 可选 `zh`（默认）或 `zh_s`。GSE 模式只影响 `file_search`，不影响 `file_get_info`、`file_read_preview` 或 Wiki 搜索。
+
 调用示例：
 
 ```json
@@ -47,13 +49,13 @@ FILE_SEARCH_ROOT=/srv/searchable-files MCP_ENABLED_TOOLS=file_search go run ./cm
 }
 ```
 
-- `query`：必填，不超过 256 个字符，按不区分大小写的连续文本匹配，支持中文。
+- `query`：必填，不超过 256 个字符。`builtin` 模式按不区分大小写的连续文本匹配；`gse` 模式按 GSE 词项匹配，同时保留完整短语匹配，支持中文。
 - `search_in`：`all`（默认，标题和正文）、`title`（标题或文件名）、`content`（正文）。Markdown 标题取首个代码块外的一级标题，未找到时使用文件名。
 - `limit`：默认 20，最大 100。综合搜索时标题命中优先，同类结果按相对路径排序。
 - 返回 `items` 数组，每项包含 `path`（相对根目录的路径）、`title`、`snippet`（命中位置附近最多 240 字符及省略号）、`matched_fields`、`size_bytes`。无结果时返回空数组。
 - 普通文件支持文件名搜索；正文读取支持 `.md`、`.markdown`、`.txt`、`.text`、`.csv`、`.json`、`.yaml`、`.yml`、`.xml`、`.html`、`.htm` 的 UTF-8 文本。PDF、Word、Excel 等格式仅支持文件名搜索。
 - 递归搜索根目录，跳过隐藏文件及目录、符号链接、非普通文件、超过 2 MiB 的文件；文本文件包含 NUL 字节或无效 UTF-8 时跳过。正文搜索包含文件的原始文本，不解析 HTML 标签等格式。
-- 每次调用重新扫描，无索引和结果缓存，文件变更在下一次查询可见。扫描成本随目录大小增长，读取错误会使查询失败；不返回部分成功结果。
+- `builtin` 模式每次调用重新扫描，无索引和结果缓存；`gse` 模式首次查询构建内存倒排索引，后续查询扫描目录元数据检测变更，仅对新增或变更文件重新读取和分词，文件变更在下一次查询可见。索引不持久化，重启后重建；读取错误会使查询失败，不返回部分成功结果。
 
 此外还提供两个细分工具：`file_get_info`（文件大小、修改时间、类型等元数据）和 `file_read_preview`（`start_line`/`end_line` 行区间预览，最多 200 行）。它们与 `file_search` 共用同一 `FILE_SEARCH_ROOT` 和路径安全边界；文件名和正文检索统一使用 `file_search` 的 `search_in` 参数。
 
