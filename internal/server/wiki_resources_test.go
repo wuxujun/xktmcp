@@ -67,7 +67,7 @@ func TestWikiResourcePageUsesTrustedUserForSharedURI(t *testing.T) {
 	}
 }
 
-func TestWikiResourceMapsInvalidURIAndUnknownUserToNotFound(t *testing.T) {
+func TestWikiResourceMapsInvalidURIAndUsesDefaultForUnknownUser(t *testing.T) {
 	router := newMultiUserWikiResourceRouter(t)
 	pageHandler := wikiPageHandler(router, "")
 	ctxA := trace.WithAuthenticatedUserID(context.Background(), "user-a")
@@ -80,8 +80,10 @@ func TestWikiResourceMapsInvalidURIAndUnknownUserToNotFound(t *testing.T) {
 		t.Fatal(err)
 	}
 	unknownCtx := trace.WithAuthenticatedUserID(context.Background(), "unknown")
-	_, err = pageHandler(unknownCtx, &mcp.ReadResourceRequest{Params: &mcp.ReadResourceParams{URI: pageURI}})
-	assertWikiResourceNotFound(t, err)
+	result, err := pageHandler(unknownCtx, &mcp.ReadResourceRequest{Params: &mcp.ReadResourceParams{URI: pageURI}})
+	if err != nil || len(result.Contents) != 1 || result.Contents[0].Text != "公共内容" {
+		t.Fatalf("result=%+v err=%v, want default wiki content", result, err)
+	}
 }
 
 func TestWikiResourceRejectsMissingParamsAndMismatchedFixedURI(t *testing.T) {

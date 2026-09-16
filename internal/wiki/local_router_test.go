@@ -2,7 +2,6 @@ package wiki
 
 import (
 	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -36,8 +35,9 @@ func TestLocalRouterIsolatesUsers(t *testing.T) {
 	if len(resultsB) != 0 {
 		t.Fatalf("user-b saw user-a content: %#v", resultsB)
 	}
-	if _, err := router.SearchWiki(context.Background(), "unknown", "公共", "", 5); !errors.Is(err, ErrUserWikiNotConfigured) {
-		t.Fatalf("unknown user error = %v, want ErrUserWikiNotConfigured", err)
+	resultsUnknown, err := router.SearchWiki(context.Background(), "unknown", "公共", "", 5)
+	if err != nil || len(resultsUnknown) != 1 || resultsUnknown[0].Title != "公共手册" {
+		t.Fatalf("unknown user results = %#v, err=%v, want default wiki", resultsUnknown, err)
 	}
 }
 
@@ -81,8 +81,9 @@ func TestLocalRouterIsolatesResources(t *testing.T) {
 	if err != nil || pageB != "乙内容 139****5678" {
 		t.Fatalf("pageB=%q err=%v", pageB, err)
 	}
-	if _, err := router.ListResources(context.Background(), "unknown", 10); !errors.Is(err, ErrUserWikiNotConfigured) {
-		t.Fatalf("error=%v", err)
+	catalogUnknown, err := router.ListResources(context.Background(), "unknown", 10)
+	if err != nil || len(catalogUnknown.Items) != 1 || catalogUnknown.Items[0].Name != "公共手册" {
+		t.Fatalf("unknown user catalog=%+v err=%v, want default wiki", catalogUnknown, err)
 	}
 }
 

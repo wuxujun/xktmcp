@@ -11,12 +11,11 @@ import (
 
 var ErrUserWikiNotConfigured = errors.New("local wiki is not configured for this user")
 
-// LocalRouter 按调用者 userId 将所有本地 Wiki 操作路由到相互隔离的目录。
-// userId 只作为显式配置映射的 key，绝不参与路径拼接。
+// LocalRouter 按调用者 userId 将已配置用户的本地 Wiki 操作路由到独立目录，
+// 未配置用户使用默认目录。userId 只作为显式配置映射的 key，绝不参与路径拼接。
 type LocalRouter struct {
-	defaultSearcher    *LocalSearcher
-	users              map[string]*LocalSearcher
-	requireUserMapping bool
+	defaultSearcher *LocalSearcher
+	users           map[string]*LocalSearcher
 }
 
 func NewLocalRouter(cfg LocalConfig) (*LocalRouter, error) {
@@ -28,9 +27,8 @@ func NewLocalRouter(cfg LocalConfig) (*LocalRouter, error) {
 		return nil, err
 	}
 	router := &LocalRouter{
-		defaultSearcher:    defaultSearcher,
-		users:              make(map[string]*LocalSearcher, len(cfg.Users)),
-		requireUserMapping: cfg.RequireUserMapping,
+		defaultSearcher: defaultSearcher,
+		users:           make(map[string]*LocalSearcher, len(cfg.Users)),
 	}
 	for userID, userCfg := range cfg.Users {
 		searcher, err := NewLocalSearcher(userCfg)
@@ -56,9 +54,6 @@ func (r *LocalRouter) searcher(userID string) (*LocalSearcher, error) {
 	userID = strings.TrimSpace(userID)
 	if searcher, ok := r.users[userID]; ok {
 		return searcher, nil
-	}
-	if r.requireUserMapping {
-		return nil, ErrUserWikiNotConfigured
 	}
 	return r.defaultSearcher, nil
 }
