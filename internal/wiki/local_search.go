@@ -13,6 +13,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/wuxujun/xktmcp/internal/metrics"
 	"github.com/wuxujun/xktmcp/internal/model"
 )
 
@@ -167,7 +168,7 @@ func (s *LocalSearcher) SearchWiki(ctx context.Context, _ string, query, categor
 	return results, nil
 }
 
-func (s *LocalSearcher) refresh(ctx context.Context, force bool) error {
+func (s *LocalSearcher) refresh(ctx context.Context, force bool) (err error) {
 	s.mu.RLock()
 	fresh := time.Now().Before(s.nextRefresh)
 	s.mu.RUnlock()
@@ -181,6 +182,16 @@ func (s *LocalSearcher) refresh(ctx context.Context, force bool) error {
 		return nil
 	}
 	defer s.refreshMu.Unlock()
+	started := time.Now()
+	defer func() {
+		count := 0
+		if err == nil {
+			s.mu.RLock()
+			count = len(s.documents)
+			s.mu.RUnlock()
+		}
+		metrics.ObserveWikiIndexRefresh("local", count, time.Now(), time.Since(started), err == nil)
+	}()
 	s.mu.RLock()
 	fresh = time.Now().Before(s.nextRefresh)
 	previous := s.documents

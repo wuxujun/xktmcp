@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 type trackingBody struct {
@@ -296,4 +297,14 @@ func TestDoRequestWithRetry(t *testing.T) {
 			t.Errorf("expected context.Canceled, got %v", err)
 		}
 	})
+}
+
+func TestFullJitterBackoffIsBounded(t *testing.T) {
+	backoff := 100 * time.Millisecond
+	for i := 0; i < 100; i++ {
+		got := fullJitter(backoff)
+		if got < 0 || got >= backoff {
+			t.Fatalf("fullJitter(%v) = %v, want [0,%v)", backoff, got, backoff)
+		}
+	}
 }

@@ -1,6 +1,6 @@
 ## xktmcp
 
-基于 MCP 协议的学生、教职工、RAG 与 Wiki 数据服务，支持 stdio、SSE 和 Streamable HTTP。
+基于 MCP 协议的学生、教职工、RAG、Wiki 与本地文件搜索服务，支持 stdio、SSE 和 Streamable HTTP。
 
 ### 运行
 
@@ -25,6 +25,39 @@ HTTP/SSE 模式提供免认证运维探针：`/health` 为存活检查，进程�
 - 对应命令行参数为 `-log-http-payloads` 与 `-log-http-payload-max-bytes`，命令行参数优先。
 - 开启后使用 `category=http`、`direction=request|response`、`request_body`、`response_body` 等结构化字段。生产环境仅应在受控排障期间开启。
 - 请求元信息日志始终包含安全化的 `request_headers`，并单独提供 `mcp_protocol_version`、`mcp_session_id`、`mcp_method`；认证、Cookie 和 API Key 类 Header 仅记录为 `[REDACTED]`。
+
+### 独立本地文件搜索
+
+`file_search` 搜索服务器本地目录，使用独立的文件服务。通过 `FILE_SEARCH_ROOT` 指定搜索根目录；未配置时不注册此工具，已有工具的默认行为保持不变。
+
+只运行文件搜索服务：
+
+```bash
+FILE_SEARCH_ROOT=/srv/searchable-files MCP_ENABLED_TOOLS=file_search go run ./cmd/server/main.go
+```
+
+此模式不需要 `API_TOKEN`、`BASE_URL` 或 Wiki 配置。与其他工具一起运行时，设置 `FILE_SEARCH_ROOT` 并将文件工具加入现有 `MCP_ENABLED_TOOLS` 列表；未设置工具列表时会随现有工具一起注册。显式启用但未配置目录、或目录无法打开时，启动会报错。
+
+调用示例：
+
+```json
+{
+  "name": "file_search",
+  "arguments": {"query": "部署方案", "search_in": "all", "limit": 20}
+}
+```
+
+- `query`：必填，不超过 256 个字符，按不区分大小写的连续文本匹配，支持中文。
+- `search_in`：`all`（默认，标题和正文）、`title`（标题或文件名）、`content`（正文）。Markdown 标题取首个代码块外的一级标题，未找到时使用文件名。
+- `limit`：默认 20，最大 100。综合搜索时标题命中优先，同类结果按相对路径排序。
+- 返回 `items` 数组，每项包含 `path`（相对根目录的路径）、`title`、`snippet`（命中位置附近最多 240 字符及省略号）、`matched_fields`、`size_bytes`。无结果时返回空数组。
+- 普通文件支持文件名搜索；正文读取支持 `.md`、`.markdown`、`.txt`、`.text`、`.csv`、`.json`、`.yaml`、`.yml`、`.xml`、`.html`、`.htm` 的 UTF-8 文本。PDF、Word、Excel 等格式仅支持文件名搜索。
+- 递归搜索根目录，跳过隐藏文件及目录、符号链接、非普通文件、超过 2 MiB 的文件；文本文件包含 NUL 字节或无效 UTF-8 时跳过。正文搜索包含文件的原始文本，不解析 HTML 标签等格式。
+- 每次调用重新扫描，无索引和结果缓存，文件变更在下一次查询可见。扫描成本随目录大小增长，读取错误会使查询失败；不返回部分成功结果。
+
+此外还提供两个细分工具：`get_file_info`（文件大小、修改时间、类型等元数据）和 `read_file_preview`（`start_line`/`end_line` 行区间预览，最多 200 行）。它们与 `file_search` 共用同一 `FILE_SEARCH_ROOT` 和路径安全边界；文件名和正文检索统一使用 `file_search` 的 `search_in` 参数。
+
+**访问范围**：根目录由服务器管理员配置，调用参数不能指定或扩大目录范围。该目录是共享搜索目录，对所有获准调用 `file_search` 的用户可见，不按 `userId` 隔离。仅将需要共享的文件放入该目录，并通过现有认证及 `allowed_tools` 控制调用权限；文本与结构化结果沿用手机号、身份证号脱敏。
 
 ### 认证配置
 

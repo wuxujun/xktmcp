@@ -41,6 +41,9 @@ func findRepoFile(relPath string) (string, error) {
 // against the live server running on port 8081 (or MCP_LIVE_SERVER_URL).
 // It also reads and verifies wiki-search-session-summary.md.
 func TestLiveWikiSearchPort8081(t *testing.T) {
+	if strings.ToLower(strings.TrimSpace(os.Getenv("MCP_RUN_LIVE_TESTS"))) != "true" {
+		t.Skip("set MCP_RUN_LIVE_TESTS=true to run against a live MCP server")
+	}
 	serverURL := strings.TrimRight(strings.TrimSpace(os.Getenv("MCP_LIVE_SERVER_URL")), "/")
 	if serverURL == "" {
 		serverURL = "http://127.0.0.1:8081"

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -139,7 +140,7 @@ func main() {
 		mux.HandleFunc("/health", healthHandler)
 		mux.Handle("/ready", readinessHandler(ready.Load))
 		// Prometheus 指标端点(免认证,供抓取;如需保护可置于网络隔离或反代后)
-		mux.Handle("/metrics", metrics.Handler())
+		mux.Handle("/metrics", metricsAuthHandler(metrics.Handler()))
 		// 客户端连接 /sse 路径来建立事件流
 		mux.Handle("/sse", userIDMiddleware(finalHandler))
 		// 客户端通过 POST /messages/... 发送 JSON-RPC 消息
@@ -161,7 +162,7 @@ func main() {
 		mux.HandleFunc("/health", healthHandler)
 		mux.Handle("/ready", readinessHandler(ready.Load))
 		// Prometheus 指标端点(免认证,供抓取;如需保护可置于网络隔离或反代后)
-		mux.Handle("/metrics", metrics.Handler())
+		mux.Handle("/metrics", metricsAuthHandler(metrics.Handler()))
 		// Streamable HTTP 默认通过单一路径处理
 		mux.Handle("/mcp", userIDMiddleware(finalHandler))
 
@@ -281,6 +282,14 @@ func buildAuthConfig(localToken string) (auth.Config, error) {
 	if err != nil {
 		return auth.Config{}, err
 	}
+	positiveTTL, err := envPositiveDuration("AUTH_REMOTE_CACHE_POSITIVE_TTL")
+	if err != nil {
+		return auth.Config{}, err
+	}
+	negativeTTL, err := envPositiveDuration("AUTH_REMOTE_CACHE_NEGATIVE_TTL")
+	if err != nil {
+		return auth.Config{}, err
+	}
 
 	return auth.Config{
 		LocalToken:            localToken,
@@ -291,7 +300,24 @@ func buildAuthConfig(localToken string) (auth.Config, error) {
 		AllowedCIDRs:          cidrs,
 		TrustForwardedHeader:  envBool("AUTH_TRUST_FORWARDED_HEADER"),
 		RemoteCacheMaxEntries: remoteCacheMaxEntries,
+		PositiveTTL:           positiveTTL,
+		NegativeTTL:           negativeTTL,
 	}, nil
+}
+
+func envPositiveDuration(key string) (time.Duration, error) {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		if err == nil {
+			err = fmt.Errorf("must be positive")
+		}
+		return 0, fmt.Errorf("invalid %s: %w", key, err)
+	}
+	return d, nil
 }
 
 // envBool 解析布尔型环境变量,接受 1/true/yes/on(忽略大小写)为真,其余为假。
@@ -545,6 +571,21 @@ func healthHandler(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(`{"status":"ok"}`))
+}
+
+func metricsAuthHandler(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		expected := strings.TrimSpace(os.Getenv("METRICS_AUTH_TOKEN"))
+		if expected != "" {
+			provided := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+			if subtle.ConstantTimeCompare([]byte(provided), []byte(expected)) != 1 {
+				w.Header().Set("WWW-Authenticate", `Bearer realm="metrics"`)
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // readinessHandler 返回服务是否已完成工具与认证器初始化。

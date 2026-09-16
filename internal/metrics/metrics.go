@@ -49,6 +49,33 @@ var (
 		Name: "xkt_circuit_breaker_transitions_total",
 		Help: "熔断器状态转换次数,按熔断器名(name)与目标状态(to_state)区分。",
 	}, []string{"name", "to_state"})
+	circuitBreakerState = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "xkt_circuit_breaker_state",
+		Help: "熔断器当前状态(0=closed, 1=half-open, 2=open)。",
+	}, []string{"name"})
+	wikiIndexDocuments = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "xkt_wiki_index_documents_total",
+		Help: "Wiki 当前索引文档数。",
+	}, []string{"index"})
+	wikiIndexLastRefresh = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "xkt_wiki_index_last_refresh_unix",
+		Help: "Wiki 索引最后成功刷新时间(Unix 秒)。",
+	}, []string{"index"})
+	wikiIndexRefreshDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "xkt_wiki_index_refresh_duration_seconds",
+		Help:    "Wiki 索引刷新耗时(秒)。",
+		Buckets: prometheus.DefBuckets,
+	}, []string{"index", "status"})
+
+	upstreamDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "xkt_upstream_request_duration_seconds",
+		Help:    "上游 HTTP 请求耗时分布(秒)。",
+		Buckets: prometheus.DefBuckets,
+	}, []string{"api", "method", "status_code"})
+	upstreamRetries = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "xkt_upstream_retries_total",
+		Help: "上游 HTTP 请求重试次数。",
+	}, []string{"api"})
 )
 
 // ObserveToolCall 记录一次工具调用:计数(按状态)+ 观测耗时。
@@ -70,6 +97,32 @@ func ObserveCacheAccess(tool string, hit bool) {
 // ObserveCircuitBreakerTransition 记录一次熔断器状态转换。
 func ObserveCircuitBreakerTransition(name, toState string) {
 	circuitBreakerTransitions.WithLabelValues(name, toState).Inc()
+}
+
+// ObserveCircuitBreakerState 更新熔断器当前状态。
+func ObserveCircuitBreakerState(name string, state float64) {
+	circuitBreakerState.WithLabelValues(name).Set(state)
+}
+
+// ObserveWikiIndexRefresh 记录一次 Wiki 索引刷新。
+func ObserveWikiIndexRefresh(index string, documents int, refreshedAt time.Time, d time.Duration, success bool) {
+	status := StatusError
+	if success {
+		status = StatusOK
+		wikiIndexDocuments.WithLabelValues(index).Set(float64(documents))
+		wikiIndexLastRefresh.WithLabelValues(index).Set(float64(refreshedAt.Unix()))
+	}
+	wikiIndexRefreshDuration.WithLabelValues(index, status).Observe(d.Seconds())
+}
+
+// ObserveUpstreamRequest 记录一次上游 HTTP 尝试。
+func ObserveUpstreamRequest(api, method, statusCode string, d time.Duration) {
+	upstreamDuration.WithLabelValues(api, method, statusCode).Observe(d.Seconds())
+}
+
+// ObserveUpstreamRetry 记录一次上游重试。
+func ObserveUpstreamRetry(api string) {
+	upstreamRetries.WithLabelValues(api).Inc()
 }
 
 // Handler 返回 Prometheus 文本格式导出端点(默认注册表,含 go_*/process_* 运行时指标)。

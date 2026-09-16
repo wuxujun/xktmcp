@@ -258,7 +258,7 @@ func TestWikiUpsertPageHandler(t *testing.T) {
 	}
 }
 
-func TestWikiUpsertPageHandlerInvalidatesOnlyEffectiveUserCache(t *testing.T) {
+func TestWikiUpsertPageHandlerInvalidatesAllWikiCache(t *testing.T) {
 	ts, svc := setupWikiToolsTest(t)
 	defer ts.Close()
 
@@ -305,8 +305,8 @@ func TestWikiUpsertPageHandlerInvalidatesOnlyEffectiveUserCache(t *testing.T) {
 		}
 	}
 	for _, key := range userBKeys {
-		if _, ok := wikiCache.Get(key); !ok {
-			t.Errorf("expected other user's cache key %q to remain", key)
+		if _, ok := wikiCache.Get(key); ok {
+			t.Errorf("expected cache key %q to be invalidated", key)
 		}
 	}
 }

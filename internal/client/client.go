@@ -7,11 +7,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/wuxujun/xktmcp/internal/logger"
+	"github.com/wuxujun/xktmcp/internal/metrics"
 )
 
 func newAPIHTTPClient(timeout time.Duration) *http.Client {
@@ -74,8 +77,10 @@ func doRequestWithRetryInner(ctx context.Context, httpClient *http.Client, req *
 		}
 
 		if attempt > 1 {
-			logger.APIfCtx(ctx, apiName, "正在进行第 %d 次重试，等待 %v...", attempt, backoff)
-			timer := time.NewTimer(backoff)
+			metrics.ObserveUpstreamRetry(apiName)
+			wait := fullJitter(backoff)
+			logger.APIfCtx(ctx, apiName, "正在进行第 %d 次重试，等待 %v...", attempt, wait)
+			timer := time.NewTimer(wait)
 			select {
 			case <-ctx.Done():
 				timer.Stop()
@@ -89,7 +94,13 @@ func doRequestWithRetryInner(ctx context.Context, httpClient *http.Client, req *
 		if prepareErr != nil {
 			return nil, prepareErr
 		}
+		started := time.Now()
 		resp, err = httpClient.Do(attemptReq)
+		statusCode := "error"
+		if resp != nil {
+			statusCode = strconv.Itoa(resp.StatusCode)
+		}
+		metrics.ObserveUpstreamRequest(apiName, attemptReq.Method, statusCode, time.Since(started))
 		if err == nil {
 			// If it's a server-side transient error, retry.
 			if retryableRequest(req) && resp.StatusCode >= 500 && resp.StatusCode <= 599 {
@@ -111,6 +122,13 @@ func doRequestWithRetryInner(ctx context.Context, httpClient *http.Client, req *
 	}
 
 	return nil, fmt.Errorf("request failed after %d attempts: %w", maxAttempts, err)
+}
+
+func fullJitter(backoff time.Duration) time.Duration {
+	if backoff <= 0 {
+		return 0
+	}
+	return time.Duration(rand.Int63n(int64(backoff)))
 }
 
 func retryableRequest(req *http.Request) bool {

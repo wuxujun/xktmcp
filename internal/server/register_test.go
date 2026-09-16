@@ -26,6 +26,13 @@ func TestParseEnabledTools(t *testing.T) {
 	if _, err := parseEnabledTools("unknown_tool"); err == nil {
 		t.Fatal("unknown tool was accepted")
 	}
+	wiki, err := parseEnabledTools("wiki_*")
+	if err != nil || len(wiki) != 5 || !wiki["wiki_upsert_page"] {
+		t.Fatalf("wiki wildcard = %#v err=%v", wiki, err)
+	}
+	if _, err := parseEnabledTools("missing_*"); err == nil {
+		t.Fatal("unknown wildcard prefix was accepted")
+	}
 }
 
 type testAuditArgs struct {

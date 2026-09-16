@@ -37,6 +37,12 @@ func RegisterAll(s *mcp.Server, wikiConfigPaths ...string) error {
 		return err
 	}
 	prompts.RegisterAll(s, enabledTools)
+	if err := registerFileSearch(s, enabledTools); err != nil {
+		return err
+	}
+	if enabledTools != nil && fileToolsEnabled(enabledTools) && len(enabledTools) == 1 {
+		return nil
+	}
 	breakerSet, err := client.LoadCircuitBreakerSetFromEnv()
 	if err != nil {
 		return err
@@ -136,6 +142,8 @@ func registerWikiTools(s *mcp.Server, baseCfg client.Config, wikiConfig wikiback
 }
 
 var knownToolNames = map[string]struct{}{
+	"file_search":   {},
+	"get_file_info": {}, "read_file_preview": {},
 	"student_search": {}, "student_order": {}, "student_exam": {}, "student_get": {},
 	"rag_search": {}, "staff_search": {}, "wiki_search": {}, "wiki_get_page": {},
 	"wiki_list_tree": {}, "wiki_upsert_page": {}, "wiki_get_backlinks": {},
@@ -153,7 +161,21 @@ func parseEnabledTools(raw string) (map[string]bool, error) {
 			continue
 		}
 		if _, ok := knownToolNames[name]; !ok {
-			return nil, fmt.Errorf("unknown MCP tool %q in MCP_ENABLED_TOOLS", name)
+			if !strings.HasSuffix(name, "_*") {
+				return nil, fmt.Errorf("unknown MCP tool %q in MCP_ENABLED_TOOLS", name)
+			}
+			prefix := strings.TrimSuffix(name, "*")
+			matched := false
+			for known := range knownToolNames {
+				if strings.HasPrefix(known, prefix) {
+					set[known] = true
+					matched = true
+				}
+			}
+			if !matched {
+				return nil, fmt.Errorf("unknown MCP tool prefix %q in MCP_ENABLED_TOOLS", name)
+			}
+			continue
 		}
 		set[name] = true
 	}

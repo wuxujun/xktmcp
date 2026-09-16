@@ -10,10 +10,12 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/wuxujun/xktmcp/internal/auth"
 	"github.com/wuxujun/xktmcp/internal/logger"
+	"github.com/wuxujun/xktmcp/internal/metrics"
 	"github.com/wuxujun/xktmcp/internal/trace"
 )
 
@@ -27,6 +29,50 @@ func TestBuildAuthConfigParsesRemoteCacheCapacity(t *testing.T) {
 	cfg, err := buildAuthConfig("token")
 	if err != nil || cfg.RemoteCacheMaxEntries != 123 {
 		t.Fatalf("capacity=%d err=%v, want 123 nil", cfg.RemoteCacheMaxEntries, err)
+	}
+}
+
+func TestBuildAuthConfigParsesRemoteCacheTTLs(t *testing.T) {
+	t.Setenv("AUTH_REMOTE_CACHE_POSITIVE_TTL", "45s")
+	t.Setenv("AUTH_REMOTE_CACHE_NEGATIVE_TTL", "7s")
+	cfg, err := buildAuthConfig("token")
+	if err != nil || cfg.PositiveTTL != 45*time.Second || cfg.NegativeTTL != 7*time.Second {
+		t.Fatalf("positive=%v negative=%v err=%v", cfg.PositiveTTL, cfg.NegativeTTL, err)
+	}
+}
+
+func TestBuildAuthConfigRejectsInvalidRemoteCacheTTL(t *testing.T) {
+	for _, value := range []string{"0s", "-1s", "invalid"} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv("AUTH_REMOTE_CACHE_POSITIVE_TTL", value)
+			if _, err := buildAuthConfig("token"); err == nil {
+				t.Fatalf("buildAuthConfig accepted %q", value)
+			}
+		})
+	}
+}
+
+func TestMetricsAuthHandler(t *testing.T) {
+	next := metrics.Handler()
+	t.Setenv("METRICS_AUTH_TOKEN", "secret")
+	for _, tc := range []struct {
+		name   string
+		header string
+		code   int
+	}{
+		{"missing", "", http.StatusUnauthorized},
+		{"wrong", "Bearer other", http.StatusUnauthorized},
+		{"valid", "Bearer secret", http.StatusOK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rr := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+			req.Header.Set("Authorization", tc.header)
+			metricsAuthHandler(next).ServeHTTP(rr, req)
+			if rr.Code != tc.code {
+				t.Fatalf("status=%d, want %d", rr.Code, tc.code)
+			}
+		})
 	}
 }
 

@@ -314,7 +314,7 @@ func WikiUpsertPageHandler(
 			}, nil, nil
 		}
 
-		invalidateWikiCache(userID)
+		invalidateWikiCache()
 
 		text, redacted := pii.RedactJSON(result)
 		res := &mcp.CallToolResult{
@@ -330,16 +330,12 @@ func wikiSearchCachePrefix(userID string) string {
 	return "wiki:search:" + base64.RawURLEncoding.EncodeToString([]byte(userID)) + ":"
 }
 
-func invalidateWikiCache(userID string) {
-	if userID == "" {
-		wikiCache.DeletePrefix("wiki:")
-		return
-	}
-
-	wikiCache.DeletePrefix(wikiSearchCachePrefix(strings.TrimSpace(userID)))
-	for _, operation := range []string{"page", "tree", "backlinks"} {
-		wikiCache.DeletePrefix(fmt.Sprintf("wiki:%s:%s:", operation, userID))
-	}
+func invalidateWikiCache() {
+	// A write may target the shared default Wiki used by multiple users. The
+	// tool layer cannot reliably know which LocalSearcher the service routed to,
+	// so invalidate the complete Wiki namespace to preserve read-after-write
+	// consistency across users.
+	wikiCache.DeletePrefix("wiki:")
 }
 
 func WikiGetBacklinksHandler(

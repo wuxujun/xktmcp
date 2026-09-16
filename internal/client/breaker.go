@@ -87,7 +87,7 @@ func NewCircuitBreaker(name string, failureThreshold int, cooldown time.Duration
 	if halfOpenProbes <= 0 {
 		halfOpenProbes = defaultHalfOpenProbes
 	}
-	return &CircuitBreaker{
+	cb := &CircuitBreaker{
 		name:             name,
 		enabled:          true,
 		failureThreshold: failureThreshold,
@@ -96,6 +96,8 @@ func NewCircuitBreaker(name string, failureThreshold int, cooldown time.Duration
 		state:            stateClosed,
 		nowFn:            time.Now,
 	}
+	metrics.ObserveCircuitBreakerState(name, float64(stateClosed))
+	return cb
 }
 
 // Allow 在发起请求前调用。返回 nil 表示放行;返回 ErrCircuitOpen 表示熔断打开、应快速失败。
@@ -196,6 +198,7 @@ func (cb *CircuitBreaker) transitionLocked(to circuitState) {
 	}
 	from := cb.state
 	cb.state = to
+	metrics.ObserveCircuitBreakerState(cb.name, float64(to))
 	switch to {
 	case stateOpen:
 		logger.Errorf("[CB:%s] 熔断器打开(从 %s):连续失败达阈值,%v 内快速失败", cb.name, from, cb.cooldown)
