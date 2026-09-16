@@ -70,10 +70,10 @@ func FileSearchHandler(svc *service.FileService) func(context.Context, *mcp.Call
 }
 
 func FileInfoTool() *mcp.Tool {
-	return &mcp.Tool{Name: "get_file_info", Description: "获取搜索根目录内文件的元数据。", InputSchema: publicSchema[FileInfoArgs](envelopeFields), OutputSchema: outputSchema[model.FileInfo]()}
+	return &mcp.Tool{Name: "file_get_info", Description: "获取搜索根目录内文件的元数据。", InputSchema: publicSchema[FileInfoArgs](envelopeFields), OutputSchema: outputSchema[model.FileInfo]()}
 }
 func FilePreviewTool() *mcp.Tool {
-	return &mcp.Tool{Name: "read_file_preview", Description: "按行号区间预览 UTF-8 文本文件。", InputSchema: publicSchema[FilePreviewArgs](envelopeFields), OutputSchema: outputSchema[model.FilePreview]()}
+	return &mcp.Tool{Name: "file_read_preview", Description: "按行号区间预览 UTF-8 文本文件。", InputSchema: publicSchema[FilePreviewArgs](envelopeFields), OutputSchema: outputSchema[model.FilePreview]()}
 }
 
 func genericFileResult(ctx context.Context, value any, err error) (*mcp.CallToolResult, any, error) {

@@ -142,8 +142,8 @@ func registerWikiTools(s *mcp.Server, baseCfg client.Config, wikiConfig wikiback
 }
 
 var knownToolNames = map[string]struct{}{
-	"file_search":   {},
-	"get_file_info": {}, "read_file_preview": {},
+	"file_search":      {},
+	"file_get_info": {}, "file_read_preview": {},
 	"student_search": {}, "student_order": {}, "student_exam": {}, "student_get": {},
 	"rag_search": {}, "staff_search": {}, "wiki_search": {}, "wiki_get_page": {},
 	"wiki_list_tree": {}, "wiki_upsert_page": {}, "wiki_get_backlinks": {},

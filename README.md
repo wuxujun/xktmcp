@@ -55,7 +55,7 @@ FILE_SEARCH_ROOT=/srv/searchable-files MCP_ENABLED_TOOLS=file_search go run ./cm
 - 递归搜索根目录，跳过隐藏文件及目录、符号链接、非普通文件、超过 2 MiB 的文件；文本文件包含 NUL 字节或无效 UTF-8 时跳过。正文搜索包含文件的原始文本，不解析 HTML 标签等格式。
 - 每次调用重新扫描，无索引和结果缓存，文件变更在下一次查询可见。扫描成本随目录大小增长，读取错误会使查询失败；不返回部分成功结果。
 
-此外还提供两个细分工具：`get_file_info`（文件大小、修改时间、类型等元数据）和 `read_file_preview`（`start_line`/`end_line` 行区间预览，最多 200 行）。它们与 `file_search` 共用同一 `FILE_SEARCH_ROOT` 和路径安全边界；文件名和正文检索统一使用 `file_search` 的 `search_in` 参数。
+此外还提供两个细分工具：`file_get_info`（文件大小、修改时间、类型等元数据）和 `file_read_preview`（`start_line`/`end_line` 行区间预览，最多 200 行）。它们与 `file_search` 共用同一 `FILE_SEARCH_ROOT` 和路径安全边界；文件名和正文检索统一使用 `file_search` 的 `search_in` 参数。
 
 **访问范围**：根目录由服务器管理员配置，调用参数不能指定或扩大目录范围。该目录是共享搜索目录，对所有获准调用 `file_search` 的用户可见，不按 `userId` 隔离。仅将需要共享的文件放入该目录，并通过现有认证及 `allowed_tools` 控制调用权限；文本与结构化结果沿用手机号、身份证号脱敏。
 
