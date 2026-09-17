@@ -86,7 +86,7 @@ func TestReadErrorDetails(t *testing.T) {
 			rec := httptest.NewRecorder()
 			_, _ = rec.WriteString(tt.body)
 			resp := rec.Result()
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 
 			actual := readErrorDetails(resp)
 			if actual != tt.expected {
@@ -124,7 +124,7 @@ func TestDoRequestWithRetry(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		if atomic.LoadInt32(&first.reads) == 0 || atomic.LoadInt32(&first.closed) == 0 {
 			t.Fatalf("transient body reads=%d closed=%d, want drained and closed", first.reads, first.closed)
 		}
@@ -147,7 +147,7 @@ func TestDoRequestWithRetry(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		if atomic.LoadInt32(&calls) != 1 {
 			t.Errorf("expected 1 call, got %d", calls)
@@ -174,7 +174,7 @@ func TestDoRequestWithRetry(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		if atomic.LoadInt32(&calls) != 3 {
 			t.Errorf("expected 3 calls, got %d", calls)
@@ -197,7 +197,7 @@ func TestDoRequestWithRetry(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		if atomic.LoadInt32(&calls) != 1 {
 			t.Fatalf("expected 1 call without idempotency key, got %d", calls)
 		}
@@ -227,7 +227,7 @@ func TestDoRequestWithRetry(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		if atomic.LoadInt32(&calls) != 3 {
 			t.Fatalf("expected 3 calls with idempotency key, got %d", calls)
 		}
@@ -251,7 +251,7 @@ func TestDoRequestWithRetry(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		if atomic.LoadInt32(&calls) != 1 {
 			t.Errorf("expected 1 call (no retry for 400), got %d", calls)

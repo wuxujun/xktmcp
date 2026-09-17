@@ -511,7 +511,7 @@ func (a *Authenticator) doRemoteCall(ctx context.Context, token string) (bool, s
 		logger.Errorf("[Auth] 远程验证请求异常: %v", err)
 		return false, ""
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// 限制读取大小，防止超大响应体撑爆内存
 	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 4096))

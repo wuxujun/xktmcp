@@ -46,12 +46,12 @@ func TestRegisterAllPromptsAreDiscoverable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect server: %v", err)
 	}
-	defer serverSession.Close()
+	defer func() { _ = serverSession.Close() }()
 	clientSession, err := client.Connect(ctx, clientTransport, nil)
 	if err != nil {
 		t.Fatalf("connect client: %v", err)
 	}
-	defer clientSession.Close()
+	defer func() { _ = clientSession.Close() }()
 
 	var names []string
 	for prompt, err := range clientSession.Prompts(ctx, nil) {
@@ -90,13 +90,13 @@ func TestRegisterAllFiltersPromptsByTools(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer serverSession.Close()
+	defer func() { _ = serverSession.Close() }()
 	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "1.0.0"}, nil)
 	clientSession, err := client.Connect(ctx, clientTransport, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer clientSession.Close()
+	defer func() { _ = clientSession.Close() }()
 	var names []string
 	for prompt, err := range clientSession.Prompts(ctx, nil) {
 		if err != nil {

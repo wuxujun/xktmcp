@@ -106,7 +106,7 @@ func doRequestWithRetryInner(ctx context.Context, httpClient *http.Client, req *
 			if retryableRequest(req) && resp.StatusCode >= 500 && resp.StatusCode <= 599 {
 				logger.APIfCtx(ctx, apiName, "尝试 %d 失败，服务侧状态码: %d", attempt, resp.StatusCode)
 				_, _ = io.CopyN(io.Discard, resp.Body, transientResponseDrainLimit)
-				resp.Body.Close()
+				_ = resp.Body.Close()
 				err = fmt.Errorf("server error: status=%d", resp.StatusCode)
 				continue
 			}

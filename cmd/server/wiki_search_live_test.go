@@ -55,7 +55,7 @@ func TestLiveWikiSearchPort8081(t *testing.T) {
 		t.Skipf("Live server at %s is not reachable (%v); skipping live test", serverURL, err)
 		return
 	}
-	defer healthResp.Body.Close()
+	defer func() { _ = healthResp.Body.Close() }()
 	if healthResp.StatusCode != http.StatusOK {
 		t.Fatalf("GET /health status=%d, want 200", healthResp.StatusCode)
 	}
@@ -69,7 +69,7 @@ func TestLiveWikiSearchPort8081(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /ready failed: %v", err)
 	}
-	defer readyResp.Body.Close()
+	defer func() { _ = readyResp.Body.Close() }()
 	if readyResp.StatusCode != http.StatusOK {
 		t.Fatalf("GET /ready status=%d, want 200", readyResp.StatusCode)
 	}
@@ -84,7 +84,7 @@ func TestLiveWikiSearchPort8081(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unauthenticated /mcp request error: %v", err)
 	}
-	defer unauthResp.Body.Close()
+	defer func() { _ = unauthResp.Body.Close() }()
 	if unauthResp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("unauthenticated /mcp status=%d, want 401", unauthResp.StatusCode)
 	}
@@ -136,7 +136,7 @@ func TestLiveWikiSearchPort8081(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to connect to live MCP server at %s/mcp: %v", serverURL, err)
 	}
-	defer session.Close()
+	defer func() { _ = session.Close() }()
 
 	// 7. Test wiki_search tool with a real query
 	t.Run("wiki_search_query", func(t *testing.T) {
@@ -305,7 +305,7 @@ func TestWikiSearchAndReadSessionSummaryCorpus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect failed: %v", err)
 	}
-	defer session.Close()
+	defer func() { _ = session.Close() }()
 
 	// 4. Test searching for phrases known to exist in wiki-search-session-summary.md
 	testQueries := []struct {

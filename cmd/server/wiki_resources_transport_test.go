@@ -104,7 +104,7 @@ func TestAuthenticatedWikiResourcesTransportsIsolateTenants(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				defer session.Close()
+				defer func() { _ = session.Close() }()
 
 				roundTripper.setRoutedUser("user-b")
 				if _, err := session.ReadResource(ctx, &mcp.ReadResourceParams{URI: "wiki://catalog"}); err == nil {
@@ -182,7 +182,7 @@ func assertWikiResourcesOverTransport(t *testing.T, transport mcp.Transport) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer session.Close()
+	defer func() { _ = session.Close() }()
 	listed, err := session.ListResources(ctx, nil)
 	if err != nil || len(listed.Resources) != 2 {
 		t.Fatalf("resources=%+v err=%v", listed, err)
@@ -266,7 +266,7 @@ func assertAuthenticatedWikiResources(t *testing.T, transport mcp.Transport, wan
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer session.Close()
+	defer func() { _ = session.Close() }()
 
 	read, err := session.ReadResource(ctx, &mcp.ReadResourceParams{URI: "wiki://catalog"})
 	if err != nil || len(read.Contents) != 1 {

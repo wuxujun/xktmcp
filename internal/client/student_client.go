@@ -104,7 +104,7 @@ func (a *StudentAPI) SearchStudents(ctx context.Context, userId, query string, p
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	logger.APIfCtx(ctx, "SearchStudents", "响应状态码: %d", resp.StatusCode)
 	if resp.StatusCode >= 300 {
@@ -136,7 +136,7 @@ func (a *StudentAPI) SearchOrders(ctx context.Context, userId, query string) ([]
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	logger.APIfCtx(ctx, "SearchOrders", "响应状态码: %d", resp.StatusCode)
 	if resp.StatusCode >= 300 {
@@ -168,7 +168,7 @@ func (a *StudentAPI) SearchExam(ctx context.Context, userId, query string) ([]mo
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	logger.APIfCtx(ctx, "SearchExam", "响应状态码: %d", resp.StatusCode)
 	if resp.StatusCode >= 300 {
@@ -200,7 +200,7 @@ func (a *StudentAPI) GetStudent(ctx context.Context, userId, id string) (*model.
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	logger.APIfCtx(ctx, "GetStudent", "响应状态码: %d", resp.StatusCode)
 	if resp.StatusCode == http.StatusNotFound {

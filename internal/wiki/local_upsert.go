@@ -251,7 +251,7 @@ func atomicWriteFile(path string, data []byte, mode os.FileMode) error {
 		return err
 	}
 	tempPath := temp.Name()
-	defer os.Remove(tempPath)
+	defer func() { _ = os.Remove(tempPath) }()
 	if err = temp.Chmod(mode); err == nil {
 		_, err = temp.Write(data)
 	}
@@ -274,7 +274,7 @@ func (s *LocalSearcher) appendActivityLog(timestamp, status, pageID, title, user
 	if err != nil {
 		return fmt.Errorf("append local wiki activity log: %w", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	info, err := file.Stat()
 	if err != nil {
 		return err

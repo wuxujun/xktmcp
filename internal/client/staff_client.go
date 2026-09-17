@@ -54,7 +54,7 @@ func (a *StaffAPI) SearchStaffs(ctx context.Context, userId, query string) ([]mo
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	logger.APIfCtx(ctx, "SearchStaffs", "响应状态码: %d", resp.StatusCode)
 	if resp.StatusCode >= 300 {

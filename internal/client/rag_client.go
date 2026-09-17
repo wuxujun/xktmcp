@@ -54,7 +54,7 @@ func (a *RagAPI) SearchRags(ctx context.Context, userId, query string) ([]model.
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	logger.APIfCtx(ctx, "SearchRags", "响应状态码: %d", resp.StatusCode)
 	if resp.StatusCode >= 300 {

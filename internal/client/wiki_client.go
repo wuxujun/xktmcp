@@ -81,7 +81,7 @@ func (a *WikiAPI) SearchWiki(ctx context.Context, userId, query, category string
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode >= 300 {
 		errMsg := readErrorDetails(resp)
@@ -121,7 +121,7 @@ func (a *WikiAPI) GetPage(ctx context.Context, userId, pageID, title string) (*m
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode >= 300 {
 		errMsg := readErrorDetails(resp)
@@ -161,7 +161,7 @@ func (a *WikiAPI) ListTree(ctx context.Context, userId, parentID string, depth i
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode >= 300 {
 		errMsg := readErrorDetails(resp)
@@ -212,7 +212,7 @@ func (a *WikiAPI) UpsertPage(ctx context.Context, userId, title, content, catego
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode >= 300 {
 		errMsg := readErrorDetails(resp)
@@ -247,7 +247,7 @@ func (a *WikiAPI) GetBacklinks(ctx context.Context, userId, pageID string) ([]mo
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode >= 300 {
 		errMsg := readErrorDetails(resp)

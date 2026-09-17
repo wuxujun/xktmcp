@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -133,7 +135,7 @@ func TestEnvironmentParsingHelpers(t *testing.T) {
 func TestResponseRecorderCapturesAndUnwraps(t *testing.T) {
 	base := httptest.NewRecorder()
 	rec := &responseRecorder{ResponseWriter: base, bodyCapture: newLimitedBodyCapture(3)}
-	rec.Write([]byte("hello"))
+	_, _ = rec.Write([]byte("hello"))
 	if rec.statusCode != http.StatusOK || rec.bodyCapture.String() != "hel" || !rec.bodyCapture.truncated {
 		t.Fatalf("status=%d body=%q truncated=%t", rec.statusCode, rec.bodyCapture.String(), rec.bodyCapture.truncated)
 	}
@@ -217,7 +219,7 @@ func TestStreamableHTTPDiscoverSupports20260728(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 
 	res := rec.Result()
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	responseBody, err := io.ReadAll(res.Body)
 	if err != nil {
 		t.Fatalf("read response body: %v", err)
@@ -273,7 +275,7 @@ func TestStreamableHTTPInitialize20251125ReturnsJSON(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 
 	res := rec.Result()
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	responseBody, err := io.ReadAll(res.Body)
 	if err != nil {
 		t.Fatal(err)
@@ -462,5 +464,129 @@ func TestRequestLoggingMiddlewareOmitsPayloadsWhenDisabled(t *testing.T) {
 	}
 	if strings.Contains(output, "super-secret-token") || !strings.Contains(output, "[REDACTED]") {
 		t.Fatalf("sensitive request header was not redacted:\n%s", output)
+	}
+}
+
+func TestRequestBodyReadTimeoutMiddlewareRejectsSlowPOST(t *testing.T) {
+	authenticator, err := auth.New(auth.Config{LocalToken: "secret"})
+	if err != nil {
+		t.Fatalf("new authenticator: %v", err)
+	}
+	handler := requestBodyReadTimeoutMiddleware(
+		requestLoggingMiddleware(
+			authenticator.Middleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				t.Fatal("slow request unexpectedly reached handler")
+			})),
+			httpPayloadLogConfig{Enabled: true, MaxBytes: 1024},
+		),
+		25*time.Millisecond,
+	)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	conn, err := net.Dial("tcp", server.Listener.Addr().String())
+	if err != nil {
+		t.Fatalf("dial test server: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("set client read deadline: %v", err)
+	}
+	request := "POST /mcp HTTP/1.1\r\n" +
+		"Host: test\r\n" +
+		"Authorization: Bearer secret\r\n" +
+		"Content-Length: 10\r\n\r\n" +
+		"x"
+	if _, err := io.WriteString(conn, request); err != nil {
+		t.Fatalf("write partial request: %v", err)
+	}
+
+	response, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodPost})
+	if err != nil {
+		t.Fatalf("read timeout response: %v", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status=%d, want %d", response.StatusCode, http.StatusBadRequest)
+	}
+	if !response.Close {
+		t.Fatal("slow request connection remained reusable")
+	}
+}
+
+type readDeadlineRecorder struct {
+	*httptest.ResponseRecorder
+	deadlines []time.Time
+}
+
+func (rec *readDeadlineRecorder) SetReadDeadline(deadline time.Time) error {
+	rec.deadlines = append(rec.deadlines, deadline)
+	return nil
+}
+
+func TestRequestBodyReadTimeoutMiddlewareOnlyBoundsPOSTAndClearsDeadline(t *testing.T) {
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := io.Copy(io.Discard, r.Body); err != nil {
+			t.Fatalf("read request body: %v", err)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	handler := requestBodyReadTimeoutMiddleware(next, time.Second)
+
+	getRecorder := &readDeadlineRecorder{ResponseRecorder: httptest.NewRecorder()}
+	handler.ServeHTTP(getRecorder, httptest.NewRequest(http.MethodGet, "/sse", nil))
+	if len(getRecorder.deadlines) != 0 {
+		t.Fatalf("GET deadlines=%v, want none", getRecorder.deadlines)
+	}
+
+	postRecorder := &readDeadlineRecorder{ResponseRecorder: httptest.NewRecorder()}
+	handler.ServeHTTP(postRecorder, httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader("{}")))
+	if len(postRecorder.deadlines) != 2 {
+		t.Fatalf("POST deadlines=%v, want set and clear", postRecorder.deadlines)
+	}
+	if postRecorder.deadlines[0].IsZero() || !postRecorder.deadlines[1].IsZero() {
+		t.Fatalf("POST deadlines=%v, want non-zero then zero", postRecorder.deadlines)
+	}
+}
+
+func TestRequestBodyReadTimeoutMiddlewareKeepsCompletedPOSTConnectionReusable(t *testing.T) {
+	handler := requestBodyReadTimeoutMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := io.Copy(io.Discard, r.Body); err != nil {
+			t.Errorf("read request body: %v", err)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}), 25*time.Millisecond)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	conn, err := net.Dial("tcp", server.Listener.Addr().String())
+	if err != nil {
+		t.Fatalf("dial test server: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	reader := bufio.NewReader(conn)
+	if _, err := io.WriteString(conn, "POST /mcp HTTP/1.1\r\nHost: test\r\nContent-Length: 2\r\n\r\n{}"); err != nil {
+		t.Fatalf("write POST: %v", err)
+	}
+	response, err := http.ReadResponse(reader, &http.Request{Method: http.MethodPost})
+	if err != nil {
+		t.Fatalf("read POST response: %v", err)
+	}
+	_ = response.Body.Close()
+
+	time.Sleep(50 * time.Millisecond)
+	if _, err := io.WriteString(conn, "GET /sse HTTP/1.1\r\nHost: test\r\n\r\n"); err != nil {
+		t.Fatalf("reuse connection for GET: %v", err)
+	}
+	if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("set client read deadline: %v", err)
+	}
+	response, err = http.ReadResponse(reader, &http.Request{Method: http.MethodGet})
+	if err != nil {
+		t.Fatalf("read GET response on reused connection: %v", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode != http.StatusNoContent {
+		t.Fatalf("GET status=%d, want %d", response.StatusCode, http.StatusNoContent)
 	}
 }

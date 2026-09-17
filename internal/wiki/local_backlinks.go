@@ -161,45 +161,6 @@ func parseBacklinkReferences(ctx context.Context, content string) ([]backlinkRef
 	return references, nil
 }
 
-func backlinkContext(source, target localDocument, references []backlinkReference) (string, bool) {
-	for _, reference := range references {
-		if reference.wiki {
-			if wikiLinkTargets(reference.destination, target) {
-				return reference.line, true
-			}
-		} else if markdownLinkTargets(source.path, reference.destination, target.path) {
-			return reference.line, true
-		}
-	}
-	return "", false
-}
-
-func markdownLinkTargets(sourcePath, destination, targetPath string) bool {
-	destination = strings.Trim(strings.TrimSpace(destination), "<>")
-	if destination == "" || strings.HasPrefix(destination, "#") {
-		return false
-	}
-	if parsed, err := url.Parse(destination); err == nil && parsed.Scheme != "" {
-		return false
-	}
-	if index := strings.IndexAny(destination, "#?"); index >= 0 {
-		destination = destination[:index]
-	}
-	if decoded, err := url.PathUnescape(destination); err == nil {
-		destination = decoded
-	}
-	resolved := filepath.Clean(filepath.Join(filepath.Dir(sourcePath), filepath.FromSlash(destination)))
-	return resolved == filepath.Clean(targetPath)
-}
-
-func wikiLinkTargets(destination string, target localDocument) bool {
-	destination = normalize(strings.TrimSuffix(strings.TrimSpace(destination), ".md"))
-	destination = strings.Trim(destination, "/")
-	pageID := normalize(strings.TrimSuffix(target.result.PageID, ".md"))
-	stem := normalize(strings.TrimSuffix(filepath.Base(target.path), filepath.Ext(target.path)))
-	return destination == normalize(target.result.Title) || destination == pageID || destination == stem || strings.HasSuffix(pageID, "/"+destination)
-}
-
 func truncateContext(value string, maxRunes int) string {
 	if utf8.RuneCountInString(value) <= maxRunes {
 		return value

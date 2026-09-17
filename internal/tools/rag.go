@@ -144,10 +144,10 @@ func rewriteQuerySemantic(ctx context.Context, session *mcp.ServerSession, query
 
 	userPrompt := fmt.Sprintf("请改写以下查询：\n%s", query)
 
-	params := &mcp.CreateMessageParams{
+	params := &mcp.CreateMessageParams{ //nolint:staticcheck // sampling API deprecated in 2026-07-28 but still functional during deprecation window
 		SystemPrompt: systemPrompt,
 		MaxTokens:    100,
-		Messages: []*mcp.SamplingMessage{
+		Messages: []*mcp.SamplingMessage{ //nolint:staticcheck
 			{
 				Role:    mcp.Role("user"),
 				Content: &mcp.TextContent{Text: userPrompt},
@@ -156,7 +156,7 @@ func rewriteQuerySemantic(ctx context.Context, session *mcp.ServerSession, query
 		Temperature: 0.1,
 	}
 
-	res, err := session.CreateMessage(ctx, params)
+	res, err := session.CreateMessage(ctx, params) //nolint:staticcheck
 	if err != nil {
 		if isMethodNotFound(err) {
 			// 客户端没实现 sampling:属预期内的能力缺失,只在首次记一条 INFO,

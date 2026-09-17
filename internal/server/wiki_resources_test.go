@@ -67,7 +67,7 @@ func TestWikiResourcePageUsesTrustedUserForSharedURI(t *testing.T) {
 	}
 }
 
-func TestWikiResourceMapsInvalidURIAndUsesDefaultForUnknownUser(t *testing.T) {
+func TestWikiResourceMapsInvalidURIAndRejectsUnknownUser(t *testing.T) {
 	router := newMultiUserWikiResourceRouter(t)
 	pageHandler := wikiPageHandler(router, "")
 	ctxA := trace.WithAuthenticatedUserID(context.Background(), "user-a")
@@ -80,10 +80,8 @@ func TestWikiResourceMapsInvalidURIAndUsesDefaultForUnknownUser(t *testing.T) {
 		t.Fatal(err)
 	}
 	unknownCtx := trace.WithAuthenticatedUserID(context.Background(), "unknown")
-	result, err := pageHandler(unknownCtx, &mcp.ReadResourceRequest{Params: &mcp.ReadResourceParams{URI: pageURI}})
-	if err != nil || len(result.Contents) != 1 || result.Contents[0].Text != "公共内容" {
-		t.Fatalf("result=%+v err=%v, want default wiki content", result, err)
-	}
+	_, err = pageHandler(unknownCtx, &mcp.ReadResourceRequest{Params: &mcp.ReadResourceParams{URI: pageURI}})
+	assertWikiResourceNotFound(t, err)
 }
 
 func TestWikiResourceRejectsMissingParamsAndMismatchedFixedURI(t *testing.T) {
@@ -185,7 +183,7 @@ func writeWikiResourceFixture(t *testing.T, name, title, content string) string 
 func assertWikiResourceNotFound(t *testing.T, err error) {
 	t.Helper()
 	var rpcErr *jsonrpc.Error
-	if !errors.As(err, &rpcErr) || rpcErr.Code != mcp.CodeResourceNotFound {
+	if !errors.As(err, &rpcErr) || rpcErr.Code != jsonrpc.CodeInvalidParams {
 		t.Fatalf("error=%v, want resource not found", err)
 	}
 }

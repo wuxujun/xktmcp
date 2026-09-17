@@ -105,7 +105,7 @@ func (s *FileService) SearchFileNames(ctx context.Context, query string, useRege
 	if err != nil {
 		return nil, fmt.Errorf("open file search directory: %w", err)
 	}
-	defer root.Close()
+	defer func() { _ = root.Close() }()
 	items := make([]model.FileNameSearchResult, 0, limit)
 	err = fs.WalkDir(root.FS(), ".", func(name string, entry fs.DirEntry, walkErr error) error {
 		if err := ctx.Err(); err != nil {
@@ -172,7 +172,7 @@ func (s *FileService) SearchFileContent(ctx context.Context, query string, exten
 	if err != nil {
 		return nil, fmt.Errorf("open file search directory: %w", err)
 	}
-	defer root.Close()
+	defer func() { _ = root.Close() }()
 	items := make([]model.FileContentSearchResult, 0, limit)
 	err = fs.WalkDir(root.FS(), ".", func(name string, entry fs.DirEntry, walkErr error) error {
 		if err := ctx.Err(); err != nil {
@@ -229,7 +229,7 @@ func (s *FileService) GetFileInfo(ctx context.Context, filePath string) (model.F
 	if err != nil {
 		return model.FileInfo{}, fmt.Errorf("open file search directory: %w", err)
 	}
-	defer root.Close()
+	defer func() { _ = root.Close() }()
 	info, err := root.Lstat(name)
 	if err != nil {
 		return model.FileInfo{}, fmt.Errorf("stat file: %w", err)
@@ -263,7 +263,7 @@ func (s *FileService) ReadFilePreview(ctx context.Context, filePath string, star
 	if err != nil {
 		return model.FilePreview{}, fmt.Errorf("open file search directory: %w", err)
 	}
-	defer root.Close()
+	defer func() { _ = root.Close() }()
 	linkInfo, err := root.Lstat(name)
 	if err != nil || linkInfo.Mode()&os.ModeSymlink != 0 {
 		return model.FilePreview{}, errors.New("path is not a regular file")
@@ -272,7 +272,7 @@ func (s *FileService) ReadFilePreview(ctx context.Context, filePath string, star
 	if err != nil {
 		return model.FilePreview{}, fmt.Errorf("read file preview: %w", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	if info, err := file.Stat(); err != nil || !info.Mode().IsRegular() {
 		return model.FilePreview{}, errors.New("file is not a regular file")
 	}
@@ -379,7 +379,7 @@ func (s *FileService) Search(ctx context.Context, query, searchIn string, limit 
 	if err != nil {
 		return nil, fmt.Errorf("open file search directory: %w", err)
 	}
-	defer root.Close()
+	defer func() { _ = root.Close() }()
 
 	items := make([]model.FileSearchResult, 0, limit)
 	err = fs.WalkDir(root.FS(), ".", func(name string, entry fs.DirEntry, walkErr error) error {
@@ -703,7 +703,7 @@ func (s *FileService) ensureFileSearchIndex(ctx context.Context) (*fileSearchInd
 	if err != nil {
 		return nil, fmt.Errorf("open file search directory: %w", err)
 	}
-	defer root.Close()
+	defer func() { _ = root.Close() }()
 
 	previous := s.index
 	files := make(map[string]fileSearchDocument)
@@ -876,7 +876,7 @@ func readSearchFile(root *os.Root, name string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	info, err := file.Stat()
 	if err != nil {
 		return nil, err
