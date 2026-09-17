@@ -6,6 +6,7 @@ import (
 	"errors"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/wuxujun/xktmcp/internal/auth"
 	"github.com/wuxujun/xktmcp/internal/logger"
 	"github.com/wuxujun/xktmcp/internal/model"
 	"github.com/wuxujun/xktmcp/internal/pii"
@@ -57,6 +58,9 @@ func wikiCatalogHandler(backend wikiResourceBackend, maxCatalogEntries int, link
 		if req == nil || req.Params == nil || req.Params.URI != uri {
 			return nil, mcp.ResourceNotFoundError(requestedResourceURI(req))
 		}
+		if !auth.TenantToolAllowed(ctx, "wiki_search") {
+			return nil, mcp.ResourceNotFoundError(uri)
+		}
 		userID := trace.EffectiveUserID(ctx, "")
 		catalog, err := backend.ListResources(ctx, userID, maxCatalogEntries)
 		if err != nil {
@@ -86,6 +90,9 @@ func wikiTreeHandler(backend wikiResourceBackend) mcp.ResourceHandler {
 		if req == nil || req.Params == nil || req.Params.URI != uri {
 			return nil, mcp.ResourceNotFoundError(requestedResourceURI(req))
 		}
+		if !auth.TenantToolAllowed(ctx, "wiki_list_tree") {
+			return nil, mcp.ResourceNotFoundError(uri)
+		}
 		userID := trace.EffectiveUserID(ctx, "")
 		nodes, err := backend.ListTree(ctx, userID, "", 10)
 		if err != nil {
@@ -102,6 +109,9 @@ func wikiPageHandler(backend wikiResourceBackend, linkBaseURL string) mcp.Resour
 			return nil, mcp.ResourceNotFoundError(requestedResourceURI(req))
 		}
 		uri := req.Params.URI
+		if !auth.TenantToolAllowed(ctx, "wiki_get_page") {
+			return nil, mcp.ResourceNotFoundError(uri)
+		}
 		pageID, err := wikibackend.ParsePageResourceLinkURI(uri, linkBaseURL)
 		if err != nil {
 			return nil, mcp.ResourceNotFoundError(uri)

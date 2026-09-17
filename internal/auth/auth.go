@@ -97,12 +97,48 @@ type ctxKey int
 
 const ctxKeyUserID ctxKey = iota
 
+type tenantAllowedToolsKey struct{}
+
+type SessionIdentity struct {
+	digest [sha256.Size]byte
+}
+
+func (id SessionIdentity) Equal(other SessionIdentity) bool {
+	return subtle.ConstantTimeCompare(id.digest[:], other.digest[:]) == 1
+}
+
+type sessionIdentityKey struct{}
+
+func newSessionIdentity(mode, credential string) SessionIdentity {
+	return SessionIdentity{digest: sha256.Sum256([]byte(mode + "\x00" + credential))}
+}
+
+func SessionIdentityFromContext(ctx context.Context) (SessionIdentity, bool) {
+	if ctx == nil {
+		return SessionIdentity{}, false
+	}
+	id, ok := ctx.Value(sessionIdentityKey{}).(SessionIdentity)
+	return id, ok
+}
+
 const maxMCPRequestBodyBytes int64 = 4 << 20
 
 // UserIDFromCtx 从 context 中取出远程验证返回的用户 ID；未设置时返回空字符串。
 func UserIDFromCtx(ctx context.Context) string {
 	v, _ := ctx.Value(ctxKeyUserID).(string)
 	return v
+}
+
+// WithTenantAllowedTools attaches a tenant's tool ACL to the authenticated request context.
+func WithTenantAllowedTools(ctx context.Context, allowedTools []string) context.Context {
+	return context.WithValue(ctx, tenantAllowedToolsKey{}, append([]string(nil), allowedTools...))
+}
+
+// TenantToolAllowed reports whether the current request may use toolName.
+// Requests without tenant ACL context keep the existing unrestricted behavior.
+func TenantToolAllowed(ctx context.Context, toolName string) bool {
+	allowedTools, restricted := ctx.Value(tenantAllowedToolsKey{}).([]string)
+	return !restricted || isToolAllowed(toolName, allowedTools)
 }
 
 type tenantLimiter struct {
@@ -284,7 +320,10 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 		//    RemoteAddr,杜绝伪造转发头绕过;仅当部署在可信代理后才信任 X-Forwarded-For。
 		if len(a.cfg.AllowedCIDRs) > 0 {
 			if srcIP := a.securityClientIP(r); srcIP != nil && a.ipAllowed(srcIP) {
-				a.serveAuthenticated(w, r, next, body, authenticationDecision{})
+				a.serveAuthenticated(w, r, next, body, authenticationDecision{
+					sessionIdentity:    newSessionIdentity("ip", srcIP.String()),
+					hasSessionIdentity: true,
+				})
 				return
 			}
 		}
@@ -312,9 +351,11 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 				}
 
 				a.serveAuthenticated(w, r, next, body, authenticationDecision{
-					mode:      "tenant",
-					principal: tenant.Config.UserID,
-					tenant:    tenant,
+					mode:               "tenant",
+					principal:          tenant.Config.UserID,
+					tenant:             tenant,
+					sessionIdentity:    newSessionIdentity("bearer", token),
+					hasSessionIdentity: true,
 				})
 				return
 			}
@@ -323,7 +364,11 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 		// 2) 本地常量时间比对 (全局静态 Token 兜底)。
 		if a.cfg.LocalToken != "" &&
 			subtle.ConstantTimeCompare([]byte(token), []byte(a.cfg.LocalToken)) == 1 {
-			a.serveAuthenticated(w, r, next, body, authenticationDecision{mode: "local"})
+			a.serveAuthenticated(w, r, next, body, authenticationDecision{
+				mode:               "local",
+				sessionIdentity:    newSessionIdentity("bearer", token),
+				hasSessionIdentity: true,
+			})
 			return
 		}
 
@@ -336,8 +381,10 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 					ctx = trace.WithAuthenticatedUserID(ctx, userID)
 				}
 				a.serveAuthenticated(w, r.WithContext(ctx), next, body, authenticationDecision{
-					mode:      "remote",
-					principal: userID,
+					mode:               "remote",
+					principal:          userID,
+					sessionIdentity:    newSessionIdentity("bearer", token),
+					hasSessionIdentity: true,
 				})
 				return
 			}
@@ -561,9 +608,11 @@ func mask(s string) string {
 }
 
 type authenticationDecision struct {
-	mode      string
-	principal string
-	tenant    *Tenant
+	mode               string
+	principal          string
+	tenant             *Tenant
+	sessionIdentity    SessionIdentity
+	hasSessionIdentity bool
 }
 
 type inspectedRPC struct {
@@ -672,6 +721,12 @@ func (a *Authenticator) serveAuthenticated(
 	body []byte,
 	decision authenticationDecision,
 ) {
+	if decision.hasSessionIdentity {
+		r = r.WithContext(context.WithValue(r.Context(), sessionIdentityKey{}, decision.sessionIdentity))
+	}
+	if decision.tenant != nil {
+		r = r.WithContext(WithTenantAllowedTools(r.Context(), decision.tenant.Config.AllowedTools))
+	}
 	if decision.principal != "" {
 		routed := strings.TrimSpace(trace.UserIDFromContext(r.Context()))
 		if routed != "" && routed != decision.principal {

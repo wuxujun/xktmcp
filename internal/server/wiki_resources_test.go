@@ -10,6 +10,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/wuxujun/xktmcp/internal/auth"
 	"github.com/wuxujun/xktmcp/internal/model"
 	"github.com/wuxujun/xktmcp/internal/trace"
 	wikibackend "github.com/wuxujun/xktmcp/internal/wiki"
@@ -64,6 +65,52 @@ func TestWikiResourcePageUsesTrustedUserForSharedURI(t *testing.T) {
 	result, err = pageHandler(ctxB, &mcp.ReadResourceRequest{Params: &mcp.ReadResourceParams{URI: pageURI}})
 	if err != nil || len(result.Contents) != 1 || result.Contents[0].Text != "乙内容 139****5678" {
 		t.Fatalf("result=%+v err=%v", result, err)
+	}
+}
+
+func TestWikiResourcesRequireCorrespondingTenantTool(t *testing.T) {
+	router := newMultiUserWikiResourceRouter(t)
+	pageURI, err := wikibackend.PageResourceURI("shared-page")
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseCtx := trace.WithAuthenticatedUserID(context.Background(), "user-a")
+	tests := []struct {
+		name         string
+		requiredTool string
+		handler      mcp.ResourceHandler
+		req          *mcp.ReadResourceRequest
+	}{
+		{
+			name:         "catalog uses wiki_search",
+			requiredTool: "wiki_search",
+			handler:      wikiCatalogHandler(router, 10, ""),
+			req:          &mcp.ReadResourceRequest{Params: &mcp.ReadResourceParams{URI: "wiki://catalog"}},
+		},
+		{
+			name:         "tree uses wiki_list_tree",
+			requiredTool: "wiki_list_tree",
+			handler:      wikiTreeHandler(router),
+			req:          &mcp.ReadResourceRequest{Params: &mcp.ReadResourceParams{URI: "wiki://tree"}},
+		},
+		{
+			name:         "page uses wiki_get_page",
+			requiredTool: "wiki_get_page",
+			handler:      wikiPageHandler(router, ""),
+			req:          &mcp.ReadResourceRequest{Params: &mcp.ReadResourceParams{URI: pageURI}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			allowedCtx := auth.WithTenantAllowedTools(baseCtx, []string{tt.requiredTool})
+			if _, err := tt.handler(allowedCtx, tt.req); err != nil {
+				t.Fatalf("authorized resource read failed: %v", err)
+			}
+
+			deniedCtx := auth.WithTenantAllowedTools(baseCtx, []string{"student_search"})
+			_, err := tt.handler(deniedCtx, tt.req)
+			assertWikiResourceNotFound(t, err)
+		})
 	}
 }
 

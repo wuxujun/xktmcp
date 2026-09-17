@@ -42,6 +42,108 @@ func serve(a *Authenticator, r *http.Request) int {
 	return rr.Code
 }
 
+func captureSessionIdentity(t *testing.T, a *Authenticator, req *http.Request) (SessionIdentity, bool) {
+	t.Helper()
+	var identity SessionIdentity
+	var ok bool
+	rr := httptest.NewRecorder()
+	a.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		identity, ok = SessionIdentityFromContext(r.Context())
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status=%d, want %d", rr.Code, http.StatusNoContent)
+	}
+	return identity, ok
+}
+
+func TestSessionIdentityForBearerAuthentication(t *testing.T) {
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer remote.Close()
+	remoteHost := strings.TrimPrefix(remote.URL, "http://")
+
+	tests := []struct {
+		name       string
+		newAuth    func(string) *Authenticator
+		credential string
+		other      string
+	}{
+		{
+			name: "local token",
+			newAuth: func(token string) *Authenticator {
+				return mustAuthenticator(t, Config{LocalToken: token})
+			},
+			credential: "local-a",
+			other:      "local-b",
+		},
+		{
+			name: "tenant token",
+			newAuth: func(token string) *Authenticator {
+				return mustAuthenticator(t, Config{Tenants: []TenantConfig{{Name: token, Token: token}}})
+			},
+			credential: "tenant-a",
+			other:      "tenant-b",
+		},
+		{
+			name: "remote token",
+			newAuth: func(string) *Authenticator {
+				return mustAuthenticator(t, Config{
+					RemoteVerifyURL: remote.URL,
+					AllowedHosts:    []string{remoteHost},
+					RemoteRateRPS:   100,
+					RemoteRateBurst: 100,
+				})
+			},
+			credential: "remote-a",
+			other:      "remote-b",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a := tt.newAuth(tt.credential)
+			first, ok := captureSessionIdentity(t, a, newReq("Bearer "+tt.credential, ""))
+			if !ok {
+				t.Fatal("successful Bearer authentication did not provide a session identity")
+			}
+			second, ok := captureSessionIdentity(t, a, newReq("Bearer "+tt.credential, ""))
+			if !ok || !first.Equal(second) {
+				t.Fatal("the same Bearer credential did not produce an equal session identity")
+			}
+
+			otherAuth := tt.newAuth(tt.other)
+			other, ok := captureSessionIdentity(t, otherAuth, newReq("Bearer "+tt.other, ""))
+			if !ok || first.Equal(other) {
+				t.Fatal("different Bearer credentials produced equal session identities")
+			}
+		})
+	}
+}
+
+func TestSessionIdentityForIPAllowlistAuthentication(t *testing.T) {
+	a := mustAuthenticator(t, Config{AllowedCIDRs: mustCIDRs(t, "192.0.2.0/24")})
+	requestFrom := func(ip string) *http.Request {
+		req := newReq("", "")
+		req.RemoteAddr = net.JoinHostPort(ip, "12345")
+		return req
+	}
+
+	first, ok := captureSessionIdentity(t, a, requestFrom("192.0.2.10"))
+	if !ok {
+		t.Fatal("successful IP allowlist authentication did not provide a session identity")
+	}
+	second, ok := captureSessionIdentity(t, a, requestFrom("192.0.2.10"))
+	if !ok || !first.Equal(second) {
+		t.Fatal("the same source IP did not produce an equal session identity")
+	}
+	other, ok := captureSessionIdentity(t, a, requestFrom("192.0.2.11"))
+	if !ok || first.Equal(other) {
+		t.Fatal("different source IPs produced equal session identities")
+	}
+}
+
 // 本地令牌:正确放行,错误拒绝。
 func TestLocalTokenMatch(t *testing.T) {
 	a := mustAuthenticator(t, Config{LocalToken: "secret-123"})
@@ -416,6 +518,42 @@ func TestMultiTenantAuth(t *testing.T) {
 	req3.Header.Set("Authorization", "Bearer token-2")
 	if code := serve(a, req3); code != http.StatusOK {
 		t.Errorf("tenant-2 calling any tool should pass, got %d", code)
+	}
+}
+
+func TestTenantToolAccessPropagatesToResourceRequests(t *testing.T) {
+	tests := []struct {
+		name         string
+		allowedTools []string
+		wantPage     bool
+		wantTree     bool
+	}{
+		{name: "selected tool", allowedTools: []string{"wiki_get_page"}, wantPage: true},
+		{name: "wildcard", allowedTools: []string{"*"}, wantPage: true, wantTree: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a := mustAuthenticator(t, Config{Tenants: []TenantConfig{{
+				Name: "tenant-a", Token: "secret", AllowedTools: tt.allowedTools,
+			}}})
+			req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(
+				`{"jsonrpc":"2.0","method":"resources/read","params":{"uri":"wiki://page/example"}}`,
+			))
+			req.Header.Set("Authorization", "Bearer secret")
+
+			var pageAllowed, treeAllowed bool
+			rr := httptest.NewRecorder()
+			a.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				pageAllowed = TenantToolAllowed(r.Context(), "wiki_get_page")
+				treeAllowed = TenantToolAllowed(r.Context(), "wiki_list_tree")
+				w.WriteHeader(http.StatusOK)
+			})).ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusOK || pageAllowed != tt.wantPage || treeAllowed != tt.wantTree {
+				t.Fatalf("status=%d pageAllowed=%t treeAllowed=%t, want page=%t tree=%t",
+					rr.Code, pageAllowed, treeAllowed, tt.wantPage, tt.wantTree)
+			}
+		})
 	}
 }
 
