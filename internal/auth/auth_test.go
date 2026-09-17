@@ -2,6 +2,7 @@ package auth
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -141,6 +142,49 @@ func TestSessionIdentityForIPAllowlistAuthentication(t *testing.T) {
 	other, ok := captureSessionIdentity(t, a, requestFrom("192.0.2.11"))
 	if !ok || first.Equal(other) {
 		t.Fatal("different source IPs produced equal session identities")
+	}
+}
+
+func TestSessionIdentityRejectsUninitializedValues(t *testing.T) {
+	authenticated := newSessionIdentity("bearer", "secret")
+	missing, ok := SessionIdentityFromContext(context.Background())
+	if ok {
+		t.Fatal("missing context identity reported as present")
+	}
+
+	tests := []struct {
+		name  string
+		left  SessionIdentity
+		right SessionIdentity
+	}{
+		{name: "zero versus zero"},
+		{name: "zero versus authenticated", right: authenticated},
+		{name: "authenticated versus zero", left: authenticated},
+		{name: "missing versus authenticated", left: missing, right: authenticated},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.left.Equal(tt.right) {
+				t.Fatal("uninitialized session identity compared equal")
+			}
+		})
+	}
+}
+
+func TestSessionIdentityFormattingIsOpaque(t *testing.T) {
+	identity := newSessionIdentity("bearer", "secret")
+	for _, format := range []string{"%v", "%+v", "%#v", "%s", "%q", "%x", "%X", "%d", "%p"} {
+		t.Run(format, func(t *testing.T) {
+			got := fmt.Sprintf(format, identity)
+			if format != "%p" && got != "<session-identity>" {
+				t.Fatalf("fmt.Sprintf(%q, identity) = %q, want opaque representation", format, got)
+			}
+			if strings.Contains(got, "78 94 131 106 93 133 109 21") ||
+				strings.Contains(strings.ToLower(got), "4e5e836a5d856d1582e113957516b40cb88b6c2e87097c630ec61e662a2b1fab") {
+				t.Fatalf("fmt.Sprintf(%q, identity) exposed digest bytes: %q", format, got)
+			}
+		})
 	}
 }
 

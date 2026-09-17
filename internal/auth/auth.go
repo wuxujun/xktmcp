@@ -100,17 +100,25 @@ const ctxKeyUserID ctxKey = iota
 type tenantAllowedToolsKey struct{}
 
 type SessionIdentity struct {
-	digest [sha256.Size]byte
+	digest *[sha256.Size]byte
 }
 
 func (id SessionIdentity) Equal(other SessionIdentity) bool {
+	if id.digest == nil || other.digest == nil {
+		return false
+	}
 	return subtle.ConstantTimeCompare(id.digest[:], other.digest[:]) == 1
+}
+
+func (id SessionIdentity) Format(state fmt.State, _ rune) {
+	_, _ = io.WriteString(state, "<session-identity>")
 }
 
 type sessionIdentityKey struct{}
 
 func newSessionIdentity(mode, credential string) SessionIdentity {
-	return SessionIdentity{digest: sha256.Sum256([]byte(mode + "\x00" + credential))}
+	digest := sha256.Sum256([]byte(mode + "\x00" + credential))
+	return SessionIdentity{digest: &digest}
 }
 
 func SessionIdentityFromContext(ctx context.Context) (SessionIdentity, bool) {
@@ -118,7 +126,7 @@ func SessionIdentityFromContext(ctx context.Context) (SessionIdentity, bool) {
 		return SessionIdentity{}, false
 	}
 	id, ok := ctx.Value(sessionIdentityKey{}).(SessionIdentity)
-	return id, ok
+	return id, ok && id.digest != nil
 }
 
 const maxMCPRequestBodyBytes int64 = 4 << 20
