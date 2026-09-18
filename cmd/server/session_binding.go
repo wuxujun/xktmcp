@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -215,9 +216,10 @@ func (w *sseEndpointBindingWriter) Write(p []byte) (int, error) {
 		return len(p), nil
 	}
 	if w.ready {
-		return w.ResponseWriter.Write(p)
+		return w.writeResponse(p)
 	}
 
+	bufferedBefore := len(w.buffer)
 	for i, b := range p {
 		w.buffer = append(w.buffer, b)
 		if len(w.buffer) > maxSSEEndpointEventBytes {
@@ -247,20 +249,40 @@ func (w *sseEndpointBindingWriter) Write(p []byte) (int, error) {
 		}
 
 		w.sessionID = sessionID
-		w.ready = true
 		w.commitStatus()
-		if _, err := w.ResponseWriter.Write(w.buffer); err != nil {
-			return i + 1, err
+		if n, err := w.writeResponse(w.buffer); err != nil {
+			n -= bufferedBefore
+			if n < 0 {
+				n = 0
+			}
+			if n > i+1 {
+				n = i + 1
+			}
+			return n, err
 		}
 		w.buffer = nil
+		w.ready = true
 		if i+1 < len(p) {
-			n, err := w.ResponseWriter.Write(p[i+1:])
+			n, err := w.writeResponse(p[i+1:])
 			return i + 1 + n, err
 		}
 		return len(p), nil
 	}
 
 	return len(p), nil
+}
+
+func (w *sseEndpointBindingWriter) writeResponse(p []byte) (int, error) {
+	n, err := w.ResponseWriter.Write(p)
+	if n < len(p) && err == nil {
+		err = io.ErrShortWrite
+	}
+	if err != nil {
+		w.blocked = true
+		w.ready = false
+		w.buffer = nil
+	}
+	return n, err
 }
 
 func (w *sseEndpointBindingWriter) Flush() {

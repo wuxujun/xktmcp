@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -126,6 +127,48 @@ type observingResponseWriter struct {
 	onWriteHeader func(int)
 	onWrite       func([]byte)
 	flushed       bool
+}
+
+type scriptedWriteResult struct {
+	n   int
+	err error
+}
+
+type scriptedResponseWriter struct {
+	header       http.Header
+	body         bytes.Buffer
+	writeResults []scriptedWriteResult
+	writeCalls   int
+	flushed      bool
+}
+
+func newScriptedResponseWriter(results ...scriptedWriteResult) *scriptedResponseWriter {
+	return &scriptedResponseWriter{
+		header:       make(http.Header),
+		writeResults: results,
+	}
+}
+
+func (w *scriptedResponseWriter) Header() http.Header { return w.header }
+
+func (w *scriptedResponseWriter) WriteHeader(int) {}
+
+func (w *scriptedResponseWriter) Write(p []byte) (int, error) {
+	w.writeCalls++
+	if len(w.writeResults) == 0 {
+		return w.body.Write(p)
+	}
+	result := w.writeResults[0]
+	w.writeResults = w.writeResults[1:]
+	if result.n > len(p) {
+		result.n = len(p)
+	}
+	_, _ = w.body.Write(p[:result.n])
+	return result.n, result.err
+}
+
+func (w *scriptedResponseWriter) Flush() {
+	w.flushed = true
 }
 
 func newObservingResponseWriter() *observingResponseWriter {
@@ -409,6 +452,153 @@ func TestSSEEndpointBindingWriterBuffersSplitCRLFEventAndBindsBeforeForwarding(t
 	}
 	if got := writer.Unwrap(); got != underlying {
 		t.Fatalf("Unwrap() = %T %p, want underlying %T %p", got, got, underlying, underlying)
+	}
+}
+
+func TestSSEEndpointBindingWriterBlocksAfterIncompleteEndpointWrite(t *testing.T) {
+	endpoint := "event: endpoint\ndata: /messages/?sessionid=sse-1\n\n"
+	trailing := "event: message\ndata: trailing\n\n"
+	writeErr := errors.New("endpoint write failed")
+
+	tests := []struct {
+		name     string
+		result   scriptedWriteResult
+		wantN    int
+		wantErr  error
+		wantBody string
+	}{
+		{
+			name:     "nil error short write",
+			result:   scriptedWriteResult{n: len(endpoint) - 1},
+			wantN:    len(endpoint) - 1,
+			wantErr:  io.ErrShortWrite,
+			wantBody: endpoint[:len(endpoint)-1],
+		},
+		{
+			name:     "short write with error",
+			result:   scriptedWriteResult{n: len(endpoint) - 1, err: writeErr},
+			wantN:    len(endpoint) - 1,
+			wantErr:  writeErr,
+			wantBody: endpoint[:len(endpoint)-1],
+		},
+		{
+			name:     "full write with error",
+			result:   scriptedWriteResult{n: len(endpoint), err: writeErr},
+			wantN:    len(endpoint),
+			wantErr:  writeErr,
+			wantBody: endpoint,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			underlying := newScriptedResponseWriter(tt.result)
+			writer := newSSEEndpointBindingWriter(
+				underlying,
+				newSessionBindings(),
+				authenticatedSessionIdentity(t, "token-a"),
+				true,
+			)
+
+			n, err := io.WriteString(writer, endpoint+trailing)
+			if n != tt.wantN || !errors.Is(err, tt.wantErr) {
+				t.Fatalf("Write() = (%d, %v), want (%d, %v)", n, err, tt.wantN, tt.wantErr)
+			}
+			if len(writer.buffer) != 0 {
+				t.Fatalf("retained buffer length = %d, want 0", len(writer.buffer))
+			}
+
+			later := "event: message\ndata: later\n\n"
+			if n, err := io.WriteString(writer, later); n != len(later) || err != nil {
+				t.Fatalf("blocked Write() = (%d, %v), want (%d, nil)", n, err, len(later))
+			}
+			writer.Flush()
+			if underlying.writeCalls != 1 || underlying.flushed {
+				t.Fatalf("after failure: write calls=%d flushed=%t, want 1 and false", underlying.writeCalls, underlying.flushed)
+			}
+			if got := underlying.body.String(); got != tt.wantBody {
+				t.Fatalf("body = %q, want only endpoint bytes %q", got, tt.wantBody)
+			}
+		})
+	}
+}
+
+func TestSSEEndpointBindingWriterBlocksAfterPostEndpointWriteFailure(t *testing.T) {
+	endpoint := "event: endpoint\ndata: /messages/?sessionid=sse-1\n\n"
+	trailing := "event: message\ndata: trailing\n\n"
+	direct := "event: message\ndata: direct\n\n"
+	writeErr := errors.New("direct write failed")
+
+	tests := []struct {
+		name        string
+		firstWrite  string
+		secondWrite string
+		results     []scriptedWriteResult
+		wantN       int
+		wantErr     error
+		wantBody    string
+	}{
+		{
+			name:       "nil error short trailing write",
+			firstWrite: endpoint + trailing,
+			results: []scriptedWriteResult{
+				{n: len(endpoint)},
+				{n: len(trailing) - 1},
+			},
+			wantN:    len(endpoint) + len(trailing) - 1,
+			wantErr:  io.ErrShortWrite,
+			wantBody: endpoint + trailing[:len(trailing)-1],
+		},
+		{
+			name:        "direct write error",
+			firstWrite:  endpoint,
+			secondWrite: direct,
+			results: []scriptedWriteResult{
+				{n: len(endpoint)},
+				{n: len(direct), err: writeErr},
+			},
+			wantN:    len(direct),
+			wantErr:  writeErr,
+			wantBody: endpoint + direct,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			underlying := newScriptedResponseWriter(tt.results...)
+			writer := newSSEEndpointBindingWriter(
+				underlying,
+				newSessionBindings(),
+				authenticatedSessionIdentity(t, "token-a"),
+				true,
+			)
+
+			n, err := io.WriteString(writer, tt.firstWrite)
+			if tt.secondWrite != "" {
+				if n != len(endpoint) || err != nil {
+					t.Fatalf("endpoint Write() = (%d, %v), want (%d, nil)", n, err, len(endpoint))
+				}
+				n, err = io.WriteString(writer, tt.secondWrite)
+			}
+			if n != tt.wantN || !errors.Is(err, tt.wantErr) {
+				t.Fatalf("failed Write() = (%d, %v), want (%d, %v)", n, err, tt.wantN, tt.wantErr)
+			}
+			if len(writer.buffer) != 0 {
+				t.Fatalf("retained buffer length = %d, want 0", len(writer.buffer))
+			}
+
+			later := "event: message\ndata: later\n\n"
+			if n, err := io.WriteString(writer, later); n != len(later) || err != nil {
+				t.Fatalf("blocked Write() = (%d, %v), want (%d, nil)", n, err, len(later))
+			}
+			writer.Flush()
+			if underlying.writeCalls != 2 || underlying.flushed {
+				t.Fatalf("after failure: write calls=%d flushed=%t, want 2 and false", underlying.writeCalls, underlying.flushed)
+			}
+			if got := underlying.body.String(); got != tt.wantBody {
+				t.Fatalf("body = %q, want %q", got, tt.wantBody)
+			}
+		})
 	}
 }
 
