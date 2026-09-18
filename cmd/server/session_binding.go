@@ -68,6 +68,7 @@ type streamableBindingWriter struct {
 	hasIdentity bool
 	committed   bool
 	blocked     bool
+	statusCode  int
 }
 
 func newStreamableBindingWriter(
@@ -96,15 +97,18 @@ func (w *streamableBindingWriter) WriteHeader(statusCode int) {
 
 	sessionID := strings.TrimSpace(w.Header().Get("Mcp-Session-Id"))
 	if sessionID == "" {
+		w.statusCode = statusCode
 		w.ResponseWriter.WriteHeader(statusCode)
 		return
 	}
 	if !w.hasIdentity || !w.bindings.bind(streamableSessionTransport, sessionID, w.identity) {
 		w.blocked = true
+		w.statusCode = http.StatusForbidden
 		w.Header().Del("Mcp-Session-Id")
 		http.Error(w.ResponseWriter, "Forbidden", http.StatusForbidden)
 		return
 	}
+	w.statusCode = statusCode
 	w.ResponseWriter.WriteHeader(statusCode)
 }
 
@@ -137,9 +141,11 @@ func streamableSessionBindingMiddleware(next http.Handler, bindings *sessionBind
 			http.Error(w, "Forbidden", http.StatusForbidden)
 			return
 		}
-		if r.Method == http.MethodDelete && sessionID != "" {
-			defer bindings.delete(streamableSessionTransport, sessionID)
+		writer := newStreamableBindingWriter(w, bindings, identity, hasIdentity)
+		next.ServeHTTP(writer, r)
+		if r.Method == http.MethodDelete && sessionID != "" &&
+			(writer.statusCode == 0 || writer.statusCode >= 200 && writer.statusCode < 300) {
+			bindings.delete(streamableSessionTransport, sessionID)
 		}
-		next.ServeHTTP(newStreamableBindingWriter(w, bindings, identity, hasIdentity), r)
 	})
 }

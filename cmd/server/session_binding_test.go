@@ -257,6 +257,39 @@ func TestStreamableSessionBindingMiddlewareAllowsMatchingSessionRequests(t *test
 	}
 }
 
+func TestStreamableSessionBindingMiddlewareDeletesBindingOnlyForAcceptedDelete(t *testing.T) {
+	tests := []struct {
+		name      string
+		status    int
+		wantBound bool
+	}{
+		{name: "downstream rejection", status: http.StatusBadRequest, wantBound: true},
+		{name: "implicit success", wantBound: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bindings := newSessionBindings()
+			identity := authenticatedSessionIdentity(t, "token-a")
+			if !bindings.bind(streamableSessionTransport, "session-1", identity) {
+				t.Fatal("initial bind failed")
+			}
+			next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				if tt.status != 0 {
+					w.WriteHeader(tt.status)
+				}
+			})
+			handler := authenticatedBindingHandler(t, "token-a", streamableSessionBindingMiddleware(next, bindings))
+
+			handler.ServeHTTP(httptest.NewRecorder(), authenticatedBindingRequest(http.MethodDelete, "token-a", "session-1"))
+
+			if got := bindings.matches(streamableSessionTransport, "session-1", identity); got != tt.wantBound {
+				t.Fatalf("binding present=%t after DELETE status %d, want %t", got, tt.status, tt.wantBound)
+			}
+		})
+	}
+}
+
 func TestStreamableSessionBindingMiddlewareRejectsInvalidSessionRequests(t *testing.T) {
 	tests := []struct {
 		name      string
