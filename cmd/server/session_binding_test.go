@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/wuxujun/xktmcp/internal/auth"
+	"github.com/wuxujun/xktmcp/internal/logger"
 )
 
 func authenticatedSessionIdentity(t *testing.T, token string) auth.SessionIdentity {
@@ -379,7 +381,7 @@ func TestSSEEndpointBindingWriterBuffersSplitCRLFEventAndBindsBeforeForwarding(t
 	writer := newSSEEndpointBindingWriter(underlying, bindings, identity, true)
 
 	first := "event: endpoint\r\ndata: /messages/?sessionid="
-	second := "sse-1\r\n\r\n"
+	second := "sse-1\r\n\r\nevent: message\ndata: trailing\n\n"
 	if n, err := io.WriteString(writer, first); err != nil || n != len(first) {
 		t.Fatalf("first Write() = (%d, %v), want (%d, nil)", n, err, len(first))
 	}
@@ -389,10 +391,18 @@ func TestSSEEndpointBindingWriterBuffersSplitCRLFEventAndBindsBeforeForwarding(t
 	if n, err := io.WriteString(writer, second); err != nil || n != len(second) {
 		t.Fatalf("second Write() = (%d, %v), want (%d, nil)", n, err, len(second))
 	}
-
 	want := first + second
 	if got := underlying.body.String(); got != want {
-		t.Fatalf("forwarded body = %q, want %q", got, want)
+		t.Fatalf("body immediately after readiness = %q, want %q", got, want)
+	}
+
+	later := "event: message\ndata: later\n\n"
+	if n, err := io.WriteString(writer, later); err != nil || n != len(later) {
+		t.Fatalf("later Write() = (%d, %v), want (%d, nil)", n, err, len(later))
+	}
+	want += later
+	if got := underlying.body.String(); got != want {
+		t.Fatalf("body immediately after later write = %q, want %q", got, want)
 	}
 	if !bindings.matches(sseSessionTransport, "sse-1", identity) {
 		t.Fatal("complete endpoint event did not create a binding")
@@ -424,24 +434,62 @@ func TestSSEEndpointBindingWriterFlushDoesNotExposePartialEndpoint(t *testing.T)
 
 func TestSSEEndpointBindingWriterRejectsInvalidFirstEventAndLaterWrites(t *testing.T) {
 	tests := []struct {
-		name        string
-		event       string
-		hasIdentity bool
+		name           string
+		event          string
+		hasIdentity    bool
+		bindFirst      bool
+		wantLogMessage string
 	}{
-		{name: "missing session ID", event: "event: endpoint\ndata: /messages/\n\n", hasIdentity: true},
-		{name: "wrong event name", event: "event: message\ndata: /messages/?sessionid=sse-1\n\n", hasIdentity: true},
-		{name: "oversized event", event: strings.Repeat("x", maxSSEEndpointEventBytes+1), hasIdentity: true},
-		{name: "missing identity", event: "event: endpoint\ndata: /messages/?sessionid=sse-1\n\n"},
+		{
+			name:           "missing session ID",
+			event:          "event: endpoint\ndata: /messages/?token=endpoint-secret\n\n",
+			hasIdentity:    true,
+			wantLogMessage: "SSE session rejected: transport=sse session_id=(empty) reason=missing_session_id",
+		},
+		{
+			name:           "wrong event name",
+			event:          "event: message\ndata: /messages/?sessionid=sse-1&token=endpoint-secret\n\n",
+			hasIdentity:    true,
+			wantLogMessage: "SSE session rejected: transport=sse session_id=(empty) reason=invalid_endpoint_event",
+		},
+		{
+			name:           "oversized event",
+			event:          strings.Repeat("endpoint-secret", maxSSEEndpointEventBytes/len("endpoint-secret")+1),
+			hasIdentity:    true,
+			wantLogMessage: "SSE session rejected: transport=sse session_id=(empty) reason=endpoint_event_too_large",
+		},
+		{
+			name:           "missing identity",
+			event:          "event: endpoint\ndata: /messages/?sessionid=sse-1&token=endpoint-secret\n\n",
+			wantLogMessage: "SSE session rejected: transport=sse session_id=s***1 reason=missing_identity",
+		},
+		{
+			name:           "binding conflict",
+			event:          "event: endpoint\ndata: /messages/?sessionid=sse-1&token=endpoint-secret\n\n",
+			hasIdentity:    true,
+			bindFirst:      true,
+			wantLogMessage: "SSE session rejected: transport=sse session_id=s***1 reason=session_binding_failed",
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			logger.Init(&logs)
+			t.Cleanup(func() { logger.Init(io.Discard) })
+
+			bindings := newSessionBindings()
+			if tt.bindFirst {
+				if !bindings.bind(sseSessionTransport, "sse-1", authenticatedSessionIdentity(t, "token-b")) {
+					t.Fatal("initial bind failed")
+				}
+			}
 			underlying := newObservingResponseWriter()
 			underlying.Header().Set("Content-Type", "text/event-stream")
 			underlying.Header().Set("Cache-Control", "no-cache")
 			writer := newSSEEndpointBindingWriter(
 				underlying,
-				newSessionBindings(),
+				bindings,
 				authenticatedSessionIdentity(t, "token-a"),
 				tt.hasIdentity,
 			)
@@ -463,6 +511,20 @@ func TestSSEEndpointBindingWriterRejectsInvalidFirstEventAndLaterWrites(t *testi
 			}
 			if got := underlying.Header().Get("Cache-Control"); got != "" {
 				t.Fatalf("Cache-Control = %q, want cleared", got)
+			}
+
+			logLine := strings.TrimSpace(logs.String())
+			var record map[string]any
+			if err := json.Unmarshal([]byte(logLine), &record); err != nil {
+				t.Fatalf("rejection log is not one JSON record: %v; log=%q", err, logLine)
+			}
+			if got := record["msg"]; got != tt.wantLogMessage {
+				t.Fatalf("log message = %q, want %q", got, tt.wantLogMessage)
+			}
+			for _, forbidden := range []string{"token-a", "token-b", "endpoint-secret", "/messages/", "sse-1"} {
+				if strings.Contains(logLine, forbidden) {
+					t.Fatalf("rejection log exposed forbidden value %q: %s", forbidden, logLine)
+				}
 			}
 		})
 	}
@@ -491,12 +553,15 @@ func TestSSESessionBindingMiddlewareAllowsOnlyMatchingPOST(t *testing.T) {
 	}
 
 	for _, tt := range []struct {
-		name     string
-		token    string
-		withAuth bool
+		name      string
+		token     string
+		sessionID string
+		withAuth  bool
 	}{
-		{name: "different identity", token: "token-b", withAuth: true},
-		{name: "missing identity"},
+		{name: "different identity", token: "token-b", sessionID: "sse-1", withAuth: true},
+		{name: "missing identity", sessionID: "sse-1"},
+		{name: "absent session ID", token: "token-a", withAuth: true},
+		{name: "unbound session ID", token: "token-a", sessionID: "sse-unknown", withAuth: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			var candidate http.Handler = handler
@@ -504,7 +569,11 @@ func TestSSESessionBindingMiddlewareAllowsOnlyMatchingPOST(t *testing.T) {
 				candidate = authenticatedBindingHandler(t, tt.token, candidate)
 			}
 			recorder := httptest.NewRecorder()
-			req := httptest.NewRequest(http.MethodPost, "/messages/?sessionid=sse-1", nil)
+			target := "/messages/"
+			if tt.sessionID != "" {
+				target += "?sessionid=" + tt.sessionID
+			}
+			req := httptest.NewRequest(http.MethodPost, target, nil)
 			if tt.token != "" {
 				req.Header.Set("Authorization", "Bearer "+tt.token)
 			}

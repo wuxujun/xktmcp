@@ -9,6 +9,8 @@ import (
 	"sync"
 
 	"github.com/wuxujun/xktmcp/internal/auth"
+	"github.com/wuxujun/xktmcp/internal/logger"
+	"github.com/wuxujun/xktmcp/internal/pii"
 )
 
 type sessionTransport string
@@ -17,6 +19,22 @@ const (
 	streamableSessionTransport sessionTransport = "streamable"
 	sseSessionTransport        sessionTransport = "sse"
 	maxSSEEndpointEventBytes                    = 4096
+)
+
+type sseRejectionReason string
+
+const (
+	sseRejectInvalidEndpointEvent sseRejectionReason = "invalid_endpoint_event"
+	sseRejectOversizedEvent       sseRejectionReason = "endpoint_event_too_large"
+	sseRejectMissingSessionID     sseRejectionReason = "missing_session_id"
+	sseRejectMissingIdentity      sseRejectionReason = "missing_identity"
+	sseRejectSessionBinding       sseRejectionReason = "session_binding_failed"
+	sseRejectMissingEndpointEvent sseRejectionReason = "missing_endpoint_event"
+)
+
+var (
+	errInvalidSSEEndpointEvent = errors.New("invalid SSE endpoint event")
+	errSSEEndpointNoSessionID  = errors.New("SSE endpoint event has no session ID")
 )
 
 type sessionBindingKey struct {
@@ -203,7 +221,7 @@ func (w *sseEndpointBindingWriter) Write(p []byte) (int, error) {
 	for i, b := range p {
 		w.buffer = append(w.buffer, b)
 		if len(w.buffer) > maxSSEEndpointEventBytes {
-			w.reject()
+			w.reject("", sseRejectOversizedEvent)
 			return len(p), nil
 		}
 		if !hasSSEEventBoundary(w.buffer) {
@@ -211,8 +229,20 @@ func (w *sseEndpointBindingWriter) Write(p []byte) (int, error) {
 		}
 
 		sessionID, err := parseSSEEndpointSessionID(w.buffer)
-		if err != nil || !w.hasIdentity || !w.bindings.bind(sseSessionTransport, sessionID, w.identity) {
-			w.reject()
+		if err != nil {
+			reason := sseRejectInvalidEndpointEvent
+			if errors.Is(err, errSSEEndpointNoSessionID) {
+				reason = sseRejectMissingSessionID
+			}
+			w.reject("", reason)
+			return len(p), nil
+		}
+		if !w.hasIdentity {
+			w.reject(sessionID, sseRejectMissingIdentity)
+			return len(p), nil
+		}
+		if !w.bindings.bind(sseSessionTransport, sessionID, w.identity) {
+			w.reject(sessionID, sseRejectSessionBinding)
 			return len(p), nil
 		}
 
@@ -251,7 +281,13 @@ func (w *sseEndpointBindingWriter) commitStatus() {
 	w.ResponseWriter.WriteHeader(w.statusCode)
 }
 
-func (w *sseEndpointBindingWriter) reject() {
+func (w *sseEndpointBindingWriter) reject(sessionID string, reason sseRejectionReason) {
+	logger.Errorf(
+		"SSE session rejected: transport=%s session_id=%s reason=%s",
+		sseSessionTransport,
+		pii.MaskSubject(sessionID),
+		reason,
+	)
 	w.blocked = true
 	w.buffer = nil
 	w.Header().Del("Cache-Control")
@@ -278,15 +314,15 @@ func parseSSEEndpointSessionID(event []byte) (string, error) {
 		}
 	}
 	if eventName != "endpoint" || data == "" || dataLines != 1 {
-		return "", errors.New("invalid SSE endpoint event")
+		return "", errInvalidSSEEndpointEvent
 	}
 	u, err := url.Parse(data)
 	if err != nil {
-		return "", errors.New("SSE endpoint event has no session ID")
+		return "", errSSEEndpointNoSessionID
 	}
 	sessionID := strings.TrimSpace(u.Query().Get("sessionid"))
 	if sessionID == "" {
-		return "", errors.New("SSE endpoint event has no session ID")
+		return "", errSSEEndpointNoSessionID
 	}
 	return sessionID, nil
 }
@@ -316,7 +352,7 @@ func sseSessionBindingMiddleware(next http.Handler, bindings *sessionBindings) h
 		}()
 		next.ServeHTTP(writer, r)
 		if !writer.ready && !writer.blocked {
-			writer.reject()
+			writer.reject("", sseRejectMissingEndpointEvent)
 		}
 	})
 }
