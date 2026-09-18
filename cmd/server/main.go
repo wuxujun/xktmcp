@@ -31,6 +31,8 @@ import (
 // version is replaced by release builds via -ldflags "-X main.version=...".
 var version = "1.0.1"
 
+const mcpRequestBodyReadTimeout = 30 * time.Second
+
 func implementationVersion() string {
 	if v := strings.TrimSpace(version); v != "" {
 		return v
@@ -148,7 +150,7 @@ func main() {
 
 		addr := fmt.Sprintf(":%d", *port)
 		logger.Infof("正在通过 SSE 启动 xkt-student-server，监听地址 %s/sse...", addr)
-		runServer(addr, requestLoggingMiddleware(mux, payloadLogConfig))
+		runServer(addr, requestBodyReadTimeoutMiddleware(requestLoggingMiddleware(mux, payloadLogConfig), mcpRequestBodyReadTimeout))
 
 	case "http":
 		// 创建 Streamable HTTP 处理器
@@ -168,7 +170,7 @@ func main() {
 
 		addr := fmt.Sprintf(":%d", *port)
 		logger.Infof("正在通过 Streamable HTTP 启动 xkt-mcp-server，监听地址 %s/mcp...", addr)
-		runServer(addr, requestLoggingMiddleware(mux, payloadLogConfig))
+		runServer(addr, requestBodyReadTimeoutMiddleware(requestLoggingMiddleware(mux, payloadLogConfig), mcpRequestBodyReadTimeout))
 
 	default:
 		logger.Errorf("未知的传输方式: %s (请使用 stdio, sse 或 http)", *transport)
@@ -433,6 +435,96 @@ func (rec *responseRecorder) Flush() {
 // Unwrap 返回底层 ResponseWriter,供 http.ResponseController 使用。
 func (rec *responseRecorder) Unwrap() http.ResponseWriter {
 	return rec.ResponseWriter
+}
+
+type deadlineBody struct {
+	io.ReadCloser
+	remaining int64
+	complete  bool
+}
+
+func (body *deadlineBody) Read(p []byte) (int, error) {
+	n, err := body.ReadCloser.Read(p)
+	if body.remaining >= 0 {
+		body.remaining -= int64(n)
+	}
+	if err == io.EOF || body.remaining == 0 {
+		body.complete = true
+	}
+	return n, err
+}
+
+type deadlineResponseWriter struct {
+	http.ResponseWriter
+	body        *deadlineBody
+	wroteHeader bool
+}
+
+func (w *deadlineResponseWriter) WriteHeader(statusCode int) {
+	if w.wroteHeader {
+		return
+	}
+	w.wroteHeader = true
+	if !w.body.complete {
+		w.Header().Set("Connection", "close")
+	}
+	w.ResponseWriter.WriteHeader(statusCode)
+}
+
+func (w *deadlineResponseWriter) Write(p []byte) (int, error) {
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
+	return w.ResponseWriter.Write(p)
+}
+
+func (w *deadlineResponseWriter) Flush() {
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
+	_ = http.NewResponseController(w.ResponseWriter).Flush()
+}
+
+func (w *deadlineResponseWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
+}
+
+// requestBodyReadTimeoutMiddleware limits how long POST clients may spend sending a body.
+// GET streams remain unbounded so long-lived SSE connections are unaffected.
+func requestBodyReadTimeoutMiddleware(next http.Handler, timeout time.Duration) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || timeout <= 0 {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		controller := http.NewResponseController(w)
+		if err := controller.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+			logger.ErrorfCtx(r.Context(), "设置请求体读取超时失败: %v", err)
+			http.Error(w, "request body timeout unavailable", http.StatusInternalServerError)
+			return
+		}
+		requestBody := r.Body
+		if requestBody == nil {
+			requestBody = http.NoBody
+		}
+		body := &deadlineBody{
+			ReadCloser: requestBody,
+			remaining:  r.ContentLength,
+			complete:   requestBody == http.NoBody || r.ContentLength == 0,
+		}
+		r.Body = body
+		defer func() {
+			if !body.complete {
+				return
+			}
+			if err := controller.SetReadDeadline(time.Time{}); err != nil {
+				logger.ErrorfCtx(r.Context(), "清除请求体读取超时失败: %v", err)
+			}
+		}()
+
+		next.ServeHTTP(&deadlineResponseWriter{ResponseWriter: w, body: body}, r)
+	})
 }
 
 // requestLoggingMiddleware 始终记录请求/响应元信息；仅在配置开启时记录 Body/结果。
