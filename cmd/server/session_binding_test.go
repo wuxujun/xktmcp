@@ -2,8 +2,10 @@ package main
 
 import (
 	"bytes"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -120,6 +122,7 @@ type observingResponseWriter struct {
 	status        int
 	body          bytes.Buffer
 	onWriteHeader func(int)
+	onWrite       func([]byte)
 	flushed       bool
 }
 
@@ -142,6 +145,9 @@ func (w *observingResponseWriter) WriteHeader(status int) {
 func (w *observingResponseWriter) Write(p []byte) (int, error) {
 	if w.status == 0 {
 		w.WriteHeader(http.StatusOK)
+	}
+	if w.onWrite != nil {
+		w.onWrite(p)
 	}
 	return w.body.Write(p)
 }
@@ -358,5 +364,205 @@ func TestStreamableSessionBindingMiddlewareWriterUnwrapsUnderlyingWriter(t *test
 	wrapper := newStreamableBindingWriter(underlying, newSessionBindings(), auth.SessionIdentity{}, false)
 	if got := wrapper.Unwrap(); got != underlying {
 		t.Fatalf("Unwrap() = %T %p, want underlying %T %p", got, got, underlying, underlying)
+	}
+}
+
+func TestSSEEndpointBindingWriterBuffersSplitCRLFEventAndBindsBeforeForwarding(t *testing.T) {
+	bindings := newSessionBindings()
+	identity := authenticatedSessionIdentity(t, "token-a")
+	underlying := newObservingResponseWriter()
+	underlying.onWrite = func([]byte) {
+		if !bindings.matches(sseSessionTransport, "sse-1", identity) {
+			t.Error("endpoint event was forwarded before the session was bound")
+		}
+	}
+	writer := newSSEEndpointBindingWriter(underlying, bindings, identity, true)
+
+	first := "event: endpoint\r\ndata: /messages/?sessionid="
+	second := "sse-1\r\n\r\n"
+	if n, err := io.WriteString(writer, first); err != nil || n != len(first) {
+		t.Fatalf("first Write() = (%d, %v), want (%d, nil)", n, err, len(first))
+	}
+	if underlying.status != 0 || underlying.body.Len() != 0 {
+		t.Fatalf("partial event exposed status=%d body=%q", underlying.status, underlying.body.String())
+	}
+	if n, err := io.WriteString(writer, second); err != nil || n != len(second) {
+		t.Fatalf("second Write() = (%d, %v), want (%d, nil)", n, err, len(second))
+	}
+
+	want := first + second
+	if got := underlying.body.String(); got != want {
+		t.Fatalf("forwarded body = %q, want %q", got, want)
+	}
+	if !bindings.matches(sseSessionTransport, "sse-1", identity) {
+		t.Fatal("complete endpoint event did not create a binding")
+	}
+	if got := writer.Unwrap(); got != underlying {
+		t.Fatalf("Unwrap() = %T %p, want underlying %T %p", got, got, underlying, underlying)
+	}
+}
+
+func TestSSEEndpointBindingWriterFlushDoesNotExposePartialEndpoint(t *testing.T) {
+	underlying := newObservingResponseWriter()
+	writer := newSSEEndpointBindingWriter(
+		underlying,
+		newSessionBindings(),
+		authenticatedSessionIdentity(t, "token-a"),
+		true,
+	)
+	partial := "event: endpoint\ndata: /messages/?sessionid=sse-1\n"
+
+	if _, err := io.WriteString(writer, partial); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	writer.Flush()
+
+	if underlying.status != 0 || underlying.body.Len() != 0 || underlying.flushed {
+		t.Fatalf("Flush exposed partial event: status=%d body=%q flushed=%t", underlying.status, underlying.body.String(), underlying.flushed)
+	}
+}
+
+func TestSSEEndpointBindingWriterRejectsInvalidFirstEventAndLaterWrites(t *testing.T) {
+	tests := []struct {
+		name        string
+		event       string
+		hasIdentity bool
+	}{
+		{name: "missing session ID", event: "event: endpoint\ndata: /messages/\n\n", hasIdentity: true},
+		{name: "wrong event name", event: "event: message\ndata: /messages/?sessionid=sse-1\n\n", hasIdentity: true},
+		{name: "oversized event", event: strings.Repeat("x", maxSSEEndpointEventBytes+1), hasIdentity: true},
+		{name: "missing identity", event: "event: endpoint\ndata: /messages/?sessionid=sse-1\n\n"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			underlying := newObservingResponseWriter()
+			underlying.Header().Set("Content-Type", "text/event-stream")
+			underlying.Header().Set("Cache-Control", "no-cache")
+			writer := newSSEEndpointBindingWriter(
+				underlying,
+				newSessionBindings(),
+				authenticatedSessionIdentity(t, "token-a"),
+				tt.hasIdentity,
+			)
+
+			if n, err := io.WriteString(writer, tt.event); err != nil || n != len(tt.event) {
+				t.Fatalf("first Write() = (%d, %v), want (%d, nil)", n, err, len(tt.event))
+			}
+			_, _ = io.WriteString(writer, "event: message\ndata: must-not-leak\n\n")
+			writer.Flush()
+
+			if underlying.status != http.StatusInternalServerError {
+				t.Fatalf("status = %d, want 500", underlying.status)
+			}
+			if got := underlying.body.String(); got != "Internal Server Error\n" {
+				t.Fatalf("body = %q, want only generic rejection", got)
+			}
+			if got := underlying.Header().Get("Content-Type"); got == "text/event-stream" {
+				t.Fatalf("Content-Type = %q, want SSE header cleared", got)
+			}
+			if got := underlying.Header().Get("Cache-Control"); got != "" {
+				t.Fatalf("Cache-Control = %q, want cleared", got)
+			}
+		})
+	}
+}
+
+func TestSSESessionBindingMiddlewareAllowsOnlyMatchingPOST(t *testing.T) {
+	bindings := newSessionBindings()
+	identity := authenticatedSessionIdentity(t, "token-a")
+	if !bindings.bind(sseSessionTransport, "sse-1", identity) {
+		t.Fatal("initial bind failed")
+	}
+	var calls atomic.Int32
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusNoContent)
+	})
+	handler := sseSessionBindingMiddleware(next, bindings)
+
+	matching := authenticatedBindingHandler(t, "token-a", handler)
+	matchingRecorder := httptest.NewRecorder()
+	matchingRequest := httptest.NewRequest(http.MethodPost, "/messages/?sessionid=sse-1", nil)
+	matchingRequest.Header.Set("Authorization", "Bearer token-a")
+	matching.ServeHTTP(matchingRecorder, matchingRequest)
+	if matchingRecorder.Code != http.StatusNoContent || calls.Load() != 1 {
+		t.Fatalf("matching POST status=%d calls=%d, want 204 and 1", matchingRecorder.Code, calls.Load())
+	}
+
+	for _, tt := range []struct {
+		name     string
+		token    string
+		withAuth bool
+	}{
+		{name: "different identity", token: "token-b", withAuth: true},
+		{name: "missing identity"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var candidate http.Handler = handler
+			if tt.withAuth {
+				candidate = authenticatedBindingHandler(t, tt.token, candidate)
+			}
+			recorder := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/messages/?sessionid=sse-1", nil)
+			if tt.token != "" {
+				req.Header.Set("Authorization", "Bearer "+tt.token)
+			}
+			candidate.ServeHTTP(recorder, req)
+			if recorder.Code != http.StatusForbidden || calls.Load() != 1 {
+				t.Fatalf("status=%d calls=%d, want 403 and 1", recorder.Code, calls.Load())
+			}
+		})
+	}
+}
+
+func TestSSESessionBindingMiddlewareDeletesBindingWhenGETReturns(t *testing.T) {
+	bindings := newSessionBindings()
+	identity := authenticatedSessionIdentity(t, "token-a")
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "event: endpoint\ndata: /messages/?sessionid=sse-1\n\n")
+		if !bindings.matches(sseSessionTransport, "sse-1", identity) {
+			t.Error("SSE session was not bound while GET handler was active")
+		}
+	})
+	handler := authenticatedBindingHandler(t, "token-a", sseSessionBindingMiddleware(next, bindings))
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/sse", nil)
+	req.Header.Set("Authorization", "Bearer token-a")
+
+	handler.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", recorder.Code)
+	}
+	if got := recorder.Body.String(); got != "event: endpoint\ndata: /messages/?sessionid=sse-1\n\n" {
+		t.Fatalf("body = %q, want endpoint event", got)
+	}
+	if bindings.matches(sseSessionTransport, "sse-1", identity) {
+		t.Fatal("binding remained after GET returned")
+	}
+}
+
+func TestSSESessionBindingMiddlewareRejectsMissingFirstEvent(t *testing.T) {
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.(http.Flusher).Flush()
+	})
+	handler := authenticatedBindingHandler(
+		t,
+		"token-a",
+		sseSessionBindingMiddleware(next, newSessionBindings()),
+	)
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/sse", nil)
+	req.Header.Set("Authorization", "Bearer token-a")
+
+	handler.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", recorder.Code)
+	}
+	if got := recorder.Body.String(); got != "Internal Server Error\n" {
+		t.Fatalf("body = %q, want only generic rejection", got)
 	}
 }
