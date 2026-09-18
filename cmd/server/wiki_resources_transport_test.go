@@ -45,13 +45,15 @@ func TestAuthenticatedWikiResourcesTransportsIsolateTenants(t *testing.T) {
 	t.Setenv("MCP_ENABLED_TOOLS", "wiki_search,wiki_get_page,wiki_list_tree,wiki_upsert_page,wiki_get_backlinks")
 	configPath := newMultiTenantWikiResourceTransportConfig(t)
 	tests := []struct {
-		name      string
-		handler   func(*mcp.Server) http.Handler
-		transport func(string, *http.Client) mcp.Transport
+		name           string
+		handler        func(*mcp.Server) http.Handler
+		sessionBinding func(http.Handler, *sessionBindings) http.Handler
+		transport      func(string, *http.Client) mcp.Transport
 	}{
 		{
-			name:    "streamable_http",
-			handler: newStreamableHTTPHandler,
+			name:           "streamable_http",
+			handler:        newStreamableHTTPHandler,
+			sessionBinding: streamableSessionBindingMiddleware,
 			transport: func(endpoint string, client *http.Client) mcp.Transport {
 				return &mcp.StreamableClientTransport{
 					Endpoint: endpoint, HTTPClient: client, DisableStandaloneSSE: true,
@@ -63,6 +65,7 @@ func TestAuthenticatedWikiResourcesTransportsIsolateTenants(t *testing.T) {
 			handler: func(server *mcp.Server) http.Handler {
 				return mcp.NewSSEHandler(func(*http.Request) *mcp.Server { return server }, nil)
 			},
+			sessionBinding: sseSessionBindingMiddleware,
 			transport: func(endpoint string, client *http.Client) mcp.Transport {
 				return &mcp.SSEClientTransport{Endpoint: endpoint, HTTPClient: client}
 			},
@@ -74,11 +77,13 @@ func TestAuthenticatedWikiResourcesTransportsIsolateTenants(t *testing.T) {
 			authenticator, err := auth.New(auth.Config{Tenants: []auth.TenantConfig{
 				{Name: "tenant-a", Token: "token-a", UserID: "user-a", AllowedTools: []string{"*"}},
 				{Name: "tenant-b", Token: "token-b", UserID: "user-b", AllowedTools: []string{"*"}},
+				{Name: "tenant-low", Token: "token-low", UserID: "user-b", AllowedTools: []string{"wiki_search"}},
+				{Name: "tenant-peer", Token: "token-peer", UserID: "user-b", AllowedTools: []string{"*"}},
 			}})
 			if err != nil {
 				t.Fatal(err)
 			}
-			handler := userIDMiddleware(authenticator.Middleware(tt.handler(server)))
+			handler := userIDMiddleware(authenticator.Middleware(tt.sessionBinding(tt.handler(server), newSessionBindings())))
 			httpServer := httptest.NewServer(handler)
 			defer httpServer.Close()
 
@@ -114,8 +119,95 @@ func TestAuthenticatedWikiResourcesTransportsIsolateTenants(t *testing.T) {
 					t.Fatalf("resources/read HTTP status=%d, want 403", status)
 				}
 			})
+
+			for _, switchedToken := range []struct {
+				name  string
+				token string
+			}{
+				{name: "lower permissions", token: "token-low"},
+				{name: "peer permissions", token: "token-peer"},
+			} {
+				t.Run("switched token rejects page resource with "+switchedToken.name, func(t *testing.T) {
+					if tt.name == "streamable_http" {
+						assertLegacyStreamableRejectsSwitchedToken(t, httpServer.URL, switchedToken.token)
+						return
+					}
+					roundTripper := newWikiResourceAuthRoundTripper("token-a", "")
+					transport := tt.transport(httpServer.URL, &http.Client{Transport: roundTripper})
+					ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+					defer cancel()
+					client := mcp.NewClient(&mcp.Implementation{Name: "authenticated-resource-test", Version: "1.0.0"}, nil)
+					session, err := client.Connect(ctx, transport, nil)
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer func() { _ = session.Close() }()
+
+					roundTripper.setToken(switchedToken.token)
+					if _, err := session.ReadResource(ctx, &mcp.ReadResourceParams{URI: "wiki://page/c2hhcmVkLXBhZ2U"}); err == nil {
+						t.Fatalf("page resource accepted switched credential %q", switchedToken.token)
+					}
+					if status := roundTripper.responseStatus(); status != http.StatusForbidden {
+						t.Fatalf("resources/read HTTP status=%d, want 403", status)
+					}
+				})
+			}
 		})
 	}
+}
+
+func assertLegacyStreamableRejectsSwitchedToken(t *testing.T, endpoint, switchedToken string) {
+	t.Helper()
+	roundTripper := newWikiResourceAuthRoundTripper("token-a", "")
+	client := &http.Client{Transport: roundTripper}
+
+	initializeBody := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"credential-binding-test","version":"1.0.0"}}}`
+	initializeResponse := postLegacyMCPRequest(t, client, endpoint, "", initializeBody)
+	if initializeResponse.StatusCode != http.StatusOK {
+		t.Fatalf("initialize HTTP status=%d, want 200", initializeResponse.StatusCode)
+	}
+	sessionID := initializeResponse.Header.Get("Mcp-Session-Id")
+	if sessionID == "" {
+		t.Fatal("legacy initialize response did not return Mcp-Session-Id")
+	}
+
+	initializedResponse := postLegacyMCPRequest(
+		t,
+		client,
+		endpoint,
+		sessionID,
+		`{"jsonrpc":"2.0","method":"notifications/initialized"}`,
+	)
+	if initializedResponse.StatusCode != http.StatusAccepted {
+		t.Fatalf("notifications/initialized HTTP status=%d, want 202", initializedResponse.StatusCode)
+	}
+
+	roundTripper.setToken(switchedToken)
+	readResponse := postLegacyMCPRequest(
+		t,
+		client,
+		endpoint,
+		sessionID,
+		`{"jsonrpc":"2.0","id":2,"method":"resources/read","params":{"uri":"wiki://page/c2hhcmVkLXBhZ2U"}}`,
+	)
+	if readResponse.StatusCode != http.StatusForbidden {
+		t.Fatalf("resources/read HTTP status=%d, want 403", readResponse.StatusCode)
+	}
+}
+
+func postLegacyMCPRequest(t *testing.T, client *http.Client, endpoint, sessionID, body string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, endpoint, strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	setLegacyMCPHeaders(req, sessionID)
+	response, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = response.Body.Close() })
+	return response
 }
 
 type wikiResourceAuthRoundTripper struct {
@@ -131,11 +223,12 @@ func newWikiResourceAuthRoundTripper(token, routedUser string) *wikiResourceAuth
 
 func (t *wikiResourceAuthRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	t.mu.Lock()
+	token := t.token
 	routedUser := t.routedUser
 	t.mu.Unlock()
 
 	cloned := req.Clone(req.Context())
-	cloned.Header.Set("Authorization", "Bearer "+t.token)
+	cloned.Header.Set("Authorization", "Bearer "+token)
 	query := cloned.URL.Query()
 	if routedUser == "" {
 		query.Del("userId")
@@ -150,6 +243,12 @@ func (t *wikiResourceAuthRoundTripper) RoundTrip(req *http.Request) (*http.Respo
 		t.mu.Unlock()
 	}
 	return response, err
+}
+
+func (t *wikiResourceAuthRoundTripper) setToken(token string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.token = token
 }
 
 func (t *wikiResourceAuthRoundTripper) setRoutedUser(userID string) {

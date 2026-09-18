@@ -259,6 +259,38 @@ func TestStreamableHTTPDiscoverSupports20260728(t *testing.T) {
 	}
 }
 
+func TestStreamableHTTPAuthenticatedStateless20260728RequestsRemainIndependent(t *testing.T) {
+	server := mcp.NewServer(&mcp.Implementation{Name: "test-server", Version: "1.0.0"}, nil)
+	authenticator, err := auth.New(auth.Config{Tenants: []auth.TenantConfig{
+		{Name: "tenant-a", Token: "token-a", UserID: "user-a", AllowedTools: []string{"*"}},
+		{Name: "tenant-peer", Token: "token-peer", UserID: "user-b", AllowedTools: []string{"*"}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := authenticator.Middleware(streamableSessionBindingMiddleware(newStreamableHTTPHandler(server), newSessionBindings()))
+	body := []byte(`{"jsonrpc":"2.0","id":"server-discover-probe-1","method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"Postman Client","version":"12.24.2"},"io.modelcontextprotocol/clientCapabilities":{"elicitation":{"form":{},"url":{}},"sampling":{}}}}}`)
+
+	for _, token := range []string{"token-a", "token-peer"} {
+		req := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		req.Header.Set("Mcp-Protocol-Version", protocolVersion20260728)
+		req.Header.Set("Mcp-Method", "server/discover")
+		rec := httptest.NewRecorder()
+
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code == http.StatusForbidden {
+			t.Fatalf("independent request with %q returned 403", token)
+		}
+		if sessionID := rec.Header().Get("Mcp-Session-Id"); sessionID != "" {
+			t.Fatalf("independent request with %q returned Mcp-Session-Id %q", token, sessionID)
+		}
+	}
+}
+
 func TestStreamableHTTPInitialize20251125ReturnsJSON(t *testing.T) {
 	server := mcp.NewServer(&mcp.Implementation{Name: "test-server", Version: "1.0.0"}, nil)
 	mcp.AddTool(server, &mcp.Tool{Name: "legacy_tool", Description: "legacy protocol test tool"},

@@ -135,7 +135,8 @@ func main() {
 		}, nil)
 
 		requireAuth(authenticator, "sse")
-		finalHandler := authenticator.Middleware(sseHandler)
+		bindings := newSessionBindings()
+		finalHandler := authenticator.Middleware(sseSessionBindingMiddleware(sseHandler, bindings))
 
 		mux := http.NewServeMux()
 		// 健康检查端点(免认证,供探针使用)
@@ -157,7 +158,8 @@ func main() {
 		handler := newStreamableHTTPHandler(s)
 
 		requireAuth(authenticator, "http")
-		finalHandler := authenticator.Middleware(handler)
+		bindings := newSessionBindings()
+		finalHandler := authenticator.Middleware(streamableSessionBindingMiddleware(handler, bindings))
 
 		mux := http.NewServeMux()
 		// 健康检查端点(免认证,供探针使用)
