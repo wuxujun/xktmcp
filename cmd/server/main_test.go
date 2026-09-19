@@ -9,6 +9,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -514,11 +516,80 @@ func TestRequestLoggingMiddlewareOmitsPayloadsWhenDisabled(t *testing.T) {
 		t.Fatalf("metadata logs missing while payload logging disabled:\n%s", output)
 	}
 	if !strings.Contains(output, `"mcp_protocol_version":"2025-11-25"`) ||
-		!strings.Contains(output, `"mcp_session_id":"session-123"`) {
+		!strings.Contains(output, `"mcp_session_id":"se*******23"`) {
 		t.Fatalf("MCP request headers missing from log:\n%s", output)
 	}
 	if strings.Contains(output, "super-secret-token") || !strings.Contains(output, "[REDACTED]") {
 		t.Fatalf("sensitive request header was not redacted:\n%s", output)
+	}
+}
+
+func TestRequestLoggingMiddlewareSanitizesMCPSessionIDMetadata(t *testing.T) {
+	const (
+		rawSessionID    = "raw-session-7z9q"
+		maskedSessionID = "ra************9q"
+	)
+	var logs bytes.Buffer
+	logger.Init(&logs)
+	handler := requestLoggingMiddleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}), httpPayloadLogConfig{})
+	req := httptest.NewRequest(http.MethodPost, "/messages/?SeSsIoNiD="+rawSessionID+"&trace=trace-123&userId=user-42", nil)
+	req.Header.Set("Mcp-Session-Id", rawSessionID)
+	req.Header.Set("X-Trace-Id", "header-trace-456")
+
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	output := logs.String()
+	if strings.Contains(output, rawSessionID) {
+		t.Fatalf("request metadata logs contain raw MCP session ID:\n%s", output)
+	}
+
+	var requestLog, responseLog map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
+		var entry map[string]any
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			t.Fatalf("decode log line: %v\n%s", err, line)
+		}
+		switch entry["direction"] {
+		case "request":
+			requestLog = entry
+		case "response":
+			responseLog = entry
+		}
+	}
+	if requestLog == nil || responseLog == nil {
+		t.Fatalf("missing request or response metadata log:\n%s", output)
+	}
+	if got := requestLog["mcp_session_id"]; got != maskedSessionID {
+		t.Fatalf("mcp_session_id = %q, want %q", got, maskedSessionID)
+	}
+	for direction, entry := range map[string]map[string]any{"request": requestLog, "response": responseLog} {
+		loggedPath, ok := entry["path"].(string)
+		if !ok {
+			t.Fatalf("%s path = %#v, want string", direction, entry["path"])
+		}
+		loggedURL, err := url.ParseRequestURI(loggedPath)
+		if err != nil {
+			t.Fatalf("parse %s path %q: %v", direction, loggedPath, err)
+		}
+		query := loggedURL.Query()
+		if got := query.Get("SeSsIoNiD"); got != maskedSessionID {
+			t.Fatalf("%s sessionid query = %q, want %q", direction, got, maskedSessionID)
+		}
+		if query.Get("trace") != "trace-123" || query.Get("userId") != "user-42" {
+			t.Fatalf("%s path lost non-sensitive query metadata: %q", direction, loggedPath)
+		}
+	}
+	headers, ok := requestLog["request_headers"].(map[string]any)
+	if !ok {
+		t.Fatalf("request_headers = %#v, want object", requestLog["request_headers"])
+	}
+	if got := headers["Mcp-Session-Id"]; !reflect.DeepEqual(got, []any{"[REDACTED]"}) {
+		t.Fatalf("Mcp-Session-Id request header = %#v, want redacted", got)
+	}
+	if got := headers["X-Trace-Id"]; !reflect.DeepEqual(got, []any{"header-trace-456"}) {
+		t.Fatalf("X-Trace-Id request header = %#v, want preserved", got)
 	}
 }
 

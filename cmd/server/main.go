@@ -543,19 +543,20 @@ func requestLoggingMiddleware(next http.Handler, config httpPayloadLogConfig) ht
 		contentType := r.Header.Get("Content-Type")
 		accept := r.Header.Get("Accept")
 		sessionID := r.Header.Get("Mcp-Session-Id")
+		requestPath := sanitizedRequestURI(r.URL)
 		protocolVersion := r.Header.Get("Mcp-Protocol-Version")
 		mcpMethod := r.Header.Get("Mcp-Method")
 		hasAuth := r.Header.Get("Authorization") != ""
 
 		requestFields := map[string]any{
 			"method":               r.Method,
-			"path":                 r.URL.RequestURI(),
+			"path":                 requestPath,
 			"remote_ip":            ip,
 			"host":                 r.Host,
 			"content_type":         contentType,
 			"accept":               accept,
 			"mcp_protocol_version": protocolVersion,
-			"mcp_session_id":       sessionID,
+			"mcp_session_id":       maskSessionID(sessionID),
 			"mcp_method":           mcpMethod,
 			"has_auth":             hasAuth,
 			"request_headers":      safeRequestHeaders(r.Header),
@@ -600,7 +601,7 @@ func requestLoggingMiddleware(next http.Handler, config httpPayloadLogConfig) ht
 
 		responseFields := map[string]any{
 			"method":     r.Method,
-			"path":       r.URL.RequestURI(),
+			"path":       requestPath,
 			"status":     rec.statusCode,
 			"latency_ms": time.Since(startedAt).Milliseconds(),
 		}
@@ -612,6 +613,35 @@ func requestLoggingMiddleware(next http.Handler, config httpPayloadLogConfig) ht
 		}
 		logger.HTTPCtx(r.Context(), "response", responseFields)
 	})
+}
+
+func sanitizedRequestURI(requestURL *url.URL) string {
+	query := requestURL.Query()
+	foundSessionID := false
+	for key, values := range query {
+		if !strings.EqualFold(key, "sessionid") {
+			continue
+		}
+		foundSessionID = true
+		for i, value := range values {
+			values[i] = maskSessionID(value)
+		}
+		query[key] = values
+	}
+	if !foundSessionID {
+		return requestURL.RequestURI()
+	}
+
+	sanitized := *requestURL
+	sanitized.RawQuery = query.Encode()
+	return sanitized.RequestURI()
+}
+
+func maskSessionID(sessionID string) string {
+	if strings.TrimSpace(sessionID) == "" {
+		return ""
+	}
+	return pii.MaskSubject(sessionID)
 }
 
 func safeRequestHeaders(headers http.Header) map[string][]string {
@@ -630,7 +660,7 @@ func safeRequestHeaders(headers http.Header) map[string][]string {
 
 func sensitiveRequestHeader(key string) bool {
 	switch strings.ToLower(strings.TrimSpace(key)) {
-	case "authorization", "proxy-authorization", "cookie", "set-cookie", "x-api-key", "api-key":
+	case "authorization", "proxy-authorization", "cookie", "set-cookie", "x-api-key", "api-key", "mcp-session-id":
 		return true
 	default:
 		return false
