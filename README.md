@@ -82,7 +82,9 @@ FILE_SEARCH_ROOT=/srv/searchable-files MCP_ENABLED_TOOLS=file_search go run ./cm
 
 共享 `AUTH_TOKEN`、IP 白名单和 stdio 模式中的 `userId` 仅是路由元数据，并不代表经过认证的用户身份。不要把这类 `userId` 用作授权或安全边界。
 
-HTTP MCP POST 请求体最大为 4 MiB；超过该限制会返回 HTTP 413。远程 Token 验证缓存通过 `AUTH_REMOTE_CACHE_MAX_ENTRIES` 配置，默认最多 4096 条；该值必须为正整数。
+有状态 SSE 和 legacy Streamable HTTP 会话会绑定到建连时的认证凭据。同一会话中切换或轮换 Bearer Token 会返回 HTTP 403；客户端必须丢弃旧会话并使用新凭据重新连接。`2026-07-28` Streamable HTTP 为无状态模式，不创建会话绑定；stdio 同样不创建绑定。
+
+HTTP MCP POST 请求体最大为 4 MiB，且必须在 30 秒内发送完成；超限会返回 HTTP 413，读取超时会拒绝请求并终止连接。该限制仅作用于 POST 请求体，不会截断 GET/SSE 长连接。远程 Token 验证缓存通过 `AUTH_REMOTE_CACHE_MAX_ENTRIES` 配置，默认最多 4096 条；该值必须为正整数。
 
 可通过 `MCP_ENABLED_TOOLS` 使用逗号分隔的工具白名单限制注册范围；未设置时注册全部工具，未知工具名会导致启动失败。
 
@@ -113,7 +115,9 @@ The optional tenant `user_id` is a trusted authenticated principal. A `userid` r
 
 The `userId` used with a shared `AUTH_TOKEN`, IP allowlist, or stdio transport is routing metadata only, not an authenticated user identity. Do not use it for authorization or as a security boundary.
 
-HTTP MCP POST bodies are limited to 4 MiB; larger bodies receive HTTP 413. Configure the remote-token verification cache with `AUTH_REMOTE_CACHE_MAX_ENTRIES`; it defaults to 4096 entries and must be a positive integer.
+Stateful SSE and legacy Streamable HTTP sessions are bound to the credential used to establish them. Switching or rotating a Bearer token within an existing session returns HTTP 403; discard that session and reconnect with the new credential. Streamable HTTP negotiated as `2026-07-28` is stateless and creates no session binding; stdio creates no binding either.
+
+HTTP MCP POST bodies are limited to 4 MiB and must be received within 30 seconds; oversized bodies receive HTTP 413, while timed-out bodies are rejected and the connection is terminated. This deadline applies only to POST bodies and does not truncate GET/SSE streams. Configure the remote-token verification cache with `AUTH_REMOTE_CACHE_MAX_ENTRIES`; it defaults to 4096 entries and must be a positive integer.
 
 Use `MCP_ENABLED_TOOLS` with a comma-separated allowlist to limit which MCP tools are registered. When unset, all tools are registered; an unknown tool name fails startup.
 
@@ -196,6 +200,8 @@ Local 模式可以按 `userId` 显式映射不同目录。映射的每个用户�
 
 Wiki Resources 仅支持本地 Markdown 模式，默认关闭。设置 `resources.enabled=true` 后，服务注册两个固定资源（Catalog、Tree）和一个 Page 资源模板；HTTP Wiki 模式或默认禁用配置不会注册这些资源。共享多租户服务只会通过当前调用者对应的 Catalog 暴露页面元数据，不会把其他租户的页面信息放入静态资源或共享目录。
 
+使用 `AUTH_TENANTS` 时，Resources 复用 `allowed_tools` 授权：Catalog 要求 `wiki_search`，Tree 要求 `wiki_list_tree`，Page 要求 `wiki_get_page`；`*` 允许全部。缺少对应权限时，`resources/read` 返回 Resource not found。共享 Token、远程认证、IP 白名单和 stdio 模式维持原有访问行为。
+
 阶段 1–2 尚未实现 Resources 订阅（`subscriptions_enabled`）；该字段必须保持 `false`，订阅通知不会被注册。
 
 设置 `resources.link_base_url` 后，`wiki_search` 的 ResourceLink、Catalog 页面条目和页面 Resource Template 使用 `{link_base_url}/{Base64URL(page_id)}`；`resources/read` 接受该 HTTPS URI，并继续兼容 `wiki://page/{page_key}`。静态 `wiki://catalog` 与 `wiki://tree` 保持不变。该配置必须是无凭据、query 和 fragment 的绝对 HTTPS URL；目标 Wiki 网站负责解码 `page_key` 并执行登录、租户隔离与权限校验。
@@ -203,6 +209,8 @@ Wiki Resources 仅支持本地 Markdown 模式，默认关闭。设置 `resource
 ### Wiki Resources (local mode)
 
 Wiki Resources are available only in local Markdown mode and are disabled by default. Set `resources.enabled=true` to register two fixed resources (Catalog and Tree) plus one Page resource template. HTTP Wiki mode and default-disabled configurations register no Resources. On a shared multi-tenant server, page metadata is exposed only through the caller-specific Catalog; static resources and shared catalogs do not contain another tenant's pages.
+
+With `AUTH_TENANTS`, Resources reuse `allowed_tools`: Catalog requires `wiki_search`, Tree requires `wiki_list_tree`, and Page requires `wiki_get_page`; `*` permits all three. A missing permission makes `resources/read` return Resource not found. Shared-token, remote-authentication, IP-allowlist, and stdio access retain their existing behavior.
 
 Resources subscriptions are not implemented in phases 1–2 (`subscriptions_enabled`); keep this field `false`. No subscription notifications are registered.
 
