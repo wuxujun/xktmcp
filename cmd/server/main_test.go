@@ -282,8 +282,31 @@ func TestStreamableHTTPAuthenticatedStateless20260728RequestsRemainIndependent(t
 
 		handler.ServeHTTP(rec, req)
 
-		if rec.Code == http.StatusForbidden {
-			t.Fatalf("independent request with %q returned 403", token)
+		responseBody := rec.Body.Bytes()
+		if rec.Code != http.StatusOK {
+			t.Fatalf("independent request with %q returned status %d, want 200; body = %s", token, rec.Code, responseBody)
+		}
+		payload := responseBody
+		if i := bytes.Index(responseBody, []byte("data: ")); i >= 0 {
+			payload = responseBody[i+len("data: "):]
+			if j := bytes.IndexByte(payload, '\n'); j >= 0 {
+				payload = payload[:j]
+			}
+		}
+		var rpcResponse struct {
+			Result struct {
+				SupportedVersions []string `json:"supportedVersions"`
+			} `json:"result"`
+			Error json.RawMessage `json:"error"`
+		}
+		if err := json.Unmarshal(payload, &rpcResponse); err != nil {
+			t.Fatalf("decode independent response for %q %q: %v", token, responseBody, err)
+		}
+		if len(rpcResponse.Error) > 0 && string(rpcResponse.Error) != "null" {
+			t.Fatalf("independent request with %q returned RPC error: %s", token, rpcResponse.Error)
+		}
+		if !slices.Contains(rpcResponse.Result.SupportedVersions, protocolVersion20260728) {
+			t.Fatalf("independent request with %q supportedVersions = %v, want %q; body = %s", token, rpcResponse.Result.SupportedVersions, protocolVersion20260728, responseBody)
 		}
 		if sessionID := rec.Header().Get("Mcp-Session-Id"); sessionID != "" {
 			t.Fatalf("independent request with %q returned Mcp-Session-Id %q", token, sessionID)

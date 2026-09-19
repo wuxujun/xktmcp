@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -164,7 +165,7 @@ func assertLegacyStreamableRejectsSwitchedToken(t *testing.T, endpoint, switched
 	initializeBody := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"credential-binding-test","version":"1.0.0"}}}`
 	initializeResponse := postLegacyMCPRequest(t, client, endpoint, "", initializeBody)
 	if initializeResponse.StatusCode != http.StatusOK {
-		t.Fatalf("initialize HTTP status=%d, want 200", initializeResponse.StatusCode)
+		t.Fatalf("initialize HTTP status=%d, want 200; body=%s", initializeResponse.StatusCode, initializeResponse.Body)
 	}
 	sessionID := initializeResponse.Header.Get("Mcp-Session-Id")
 	if sessionID == "" {
@@ -179,7 +180,7 @@ func assertLegacyStreamableRejectsSwitchedToken(t *testing.T, endpoint, switched
 		`{"jsonrpc":"2.0","method":"notifications/initialized"}`,
 	)
 	if initializedResponse.StatusCode != http.StatusAccepted {
-		t.Fatalf("notifications/initialized HTTP status=%d, want 202", initializedResponse.StatusCode)
+		t.Fatalf("notifications/initialized HTTP status=%d, want 202; body=%s", initializedResponse.StatusCode, initializedResponse.Body)
 	}
 
 	roundTripper.setToken(switchedToken)
@@ -191,23 +192,40 @@ func assertLegacyStreamableRejectsSwitchedToken(t *testing.T, endpoint, switched
 		`{"jsonrpc":"2.0","id":2,"method":"resources/read","params":{"uri":"wiki://page/c2hhcmVkLXBhZ2U"}}`,
 	)
 	if readResponse.StatusCode != http.StatusForbidden {
-		t.Fatalf("resources/read HTTP status=%d, want 403", readResponse.StatusCode)
+		t.Fatalf("resources/read HTTP status=%d, want 403; body=%s", readResponse.StatusCode, readResponse.Body)
 	}
 }
 
-func postLegacyMCPRequest(t *testing.T, client *http.Client, endpoint, sessionID, body string) *http.Response {
+type legacyMCPResponse struct {
+	StatusCode int
+	Header     http.Header
+	Body       []byte
+}
+
+func postLegacyMCPRequest(t *testing.T, client *http.Client, endpoint, sessionID, body string) legacyMCPResponse {
 	t.Helper()
 	req, err := http.NewRequest(http.MethodPost, endpoint, strings.NewReader(body))
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("create legacy MCP request: %v", err)
 	}
 	setLegacyMCPHeaders(req, sessionID)
 	response, err := client.Do(req)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("send legacy MCP request: %v", err)
 	}
-	t.Cleanup(func() { _ = response.Body.Close() })
-	return response
+	responseBody, readErr := io.ReadAll(response.Body)
+	closeErr := response.Body.Close()
+	if readErr != nil {
+		t.Fatalf("read legacy MCP response body (status=%d): %v", response.StatusCode, readErr)
+	}
+	if closeErr != nil {
+		t.Fatalf("close legacy MCP response body (status=%d, body=%s): %v", response.StatusCode, responseBody, closeErr)
+	}
+	return legacyMCPResponse{
+		StatusCode: response.StatusCode,
+		Header:     response.Header.Clone(),
+		Body:       responseBody,
+	}
 }
 
 type wikiResourceAuthRoundTripper struct {
