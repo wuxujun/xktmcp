@@ -11,23 +11,24 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  GO_VERSION: '1.25.0'
+  GOTOOLCHAIN: local
+
 jobs:
   # ─── 测试 & 静态分析 ─────────────────────────────────────────────────────────
   test:
-    name: Test (Go ${{ matrix.go-version }})
+    name: Test (Go 1.25.0)
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        go-version: ["stable", "oldstable"]
 
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Setup Go ${{ matrix.go-version }}
+      - name: Setup Go
         uses: actions/setup-go@v7
         with:
-          go-version: ${{ matrix.go-version }}
+          go-version: ${{ env.GO_VERSION }}
           cache: true          # 自动缓存 $GOPATH/pkg/mod
 
       - name: Download dependencies
@@ -39,7 +40,7 @@ jobs:
       - name: Vulnerability scan
         uses: golang/govulncheck-action@v1
         with:
-          go-version-input: ${{ matrix.go-version }}
+          go-version-input: ${{ env.GO_VERSION }}
           go-package: ./...
 
       - name: Build
@@ -52,7 +53,6 @@ jobs:
 
       - name: Upload coverage artifact
         uses: actions/upload-artifact@v4
-        if: matrix.go-version == 'stable'
         with:
           name: coverage-report
           path: coverage.out
@@ -69,7 +69,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v7
         with:
-          go-version: stable
+          go-version: ${{ env.GO_VERSION }}
           cache: true
 
       - name: golangci-lint
@@ -82,7 +82,7 @@ jobs:
   build-release:
     name: Build Linux release binary
     runs-on: ubuntu-latest
-    needs: [test]            # 仅测试通过后才构建
+    needs: [test, lint]      # 测试和 Lint 均通过后才构建
 
     steps:
       - name: Checkout
@@ -91,7 +91,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v7
         with:
-          go-version: stable
+          go-version: ${{ env.GO_VERSION }}
           cache: true
 
       - name: Build Linux amd64 binary
