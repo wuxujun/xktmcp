@@ -754,7 +754,7 @@ func TestSSESessionBindingMiddlewareAllowsOnlyMatchingPOST(t *testing.T) {
 		{name: "unbound session ID", token: "token-a", sessionID: "sse-unknown", withAuth: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			var candidate http.Handler = handler
+			candidate := handler
 			if tt.withAuth {
 				candidate = authenticatedBindingHandler(t, tt.token, candidate)
 			}
