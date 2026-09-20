@@ -2,6 +2,8 @@ module github.com/wuxujun/xktmcp
 
 go 1.25.0
 
+toolchain go1.25.13
+
 require (
 	github.com/go-ego/gse v1.0.2
 	github.com/google/jsonschema-go v0.4.3
