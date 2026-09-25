@@ -1,24 +1,48 @@
-## xktmcp
+# xktmcp
 
 基于 MCP 协议的学生、教职工、RAG、Wiki 与本地文件搜索服务，支持 stdio、SSE 和 Streamable HTTP。
 
-### 运行
+项目使用 Go 1.25（工具链 `go1.25.13`）。入口为 `cmd/server/main.go`：默认注册学生、教职工、RAG 和 Wiki 工具；配置 `FILE_SEARCH_ROOT` 后还可注册文件工具。Wiki 可选远程 HTTP 或本地 Markdown 后端。本地 Wiki Resources 默认关闭，Prompt 会随所需工具注册。完整架构与安全分析见 [项目分析报告](PROJECT_ANALYSIS.md)；部署配置矩阵和发布检查见 [部署指南](docs/deployment-guide.md)。
+
+### 快速开始
+
+以下示例中的令牌需替换为实际值。`API_TOKEN` 用于访问上游接口；HTTP/SSE 客户端认证另用 `AUTH_TOKEN`、`AUTH_TENANTS` 等配置。未设置 `BASE_URL` 时，上游地址默认为 `https://yk.xkt.com`。
 
 ```bash
-# 运行
-go run ./cmd/server/main.go -transport=http -port=8081
+# 默认 stdio；适合本地 MCP 客户端
+API_TOKEN=your-upstream-token go run ./cmd/server/main.go
 
+# Streamable HTTP；MCP 客户端连接 /mcp 并携带 Bearer Token
+API_TOKEN=your-upstream-token AUTH_TOKEN=your-mcp-token go run ./cmd/server/main.go -transport=http -port=8081
+
+# SSE；客户端连接 /sse
+API_TOKEN=your-upstream-token AUTH_TOKEN=your-mcp-token go run ./cmd/server/main.go -transport=sse -port=8081
+```
+
+仅启用本地文件工具时可跳过上游令牌，示例见下文。仅启用本地 Wiki 工具时也可跳过上游令牌，但需将 Wiki 配置切换为 `local` 并限制 `MCP_ENABLED_TOOLS`。网络模式始终需要配置 MCP 认证方式。
+
+验证项目：
+
+```bash
+go test ./internal/server ./cmd/server
+```
+
+### 请求日志与运行探针
+
+```bash
 # 开启受控 HTTP 请求/响应内容日志（默认关闭）
-go run ./cmd/server/main.go -transport=http -port=8081 -log-http-payloads
+API_TOKEN=your-upstream-token AUTH_TOKEN=your-mcp-token go run ./cmd/server/main.go -transport=http -port=8081 -log-http-payloads
 ```
 
 请求与响应内容日志默认关闭，避免把敏感业务数据直接写入日志。可通过环境变量开启：
 
 ```bash
-LOG_HTTP_PAYLOADS=true LOG_HTTP_PAYLOAD_MAX_BYTES=1048576 go run ./cmd/server/main.go -transport=http -port=8081
+API_TOKEN=your-upstream-token AUTH_TOKEN=your-mcp-token LOG_HTTP_PAYLOADS=true LOG_HTTP_PAYLOAD_MAX_BYTES=1048576 go run ./cmd/server/main.go -transport=http -port=8081
 ```
 
 HTTP/SSE 模式提供免认证运维探针：`/health` 为存活检查，进程可响应时返回 `200`；`/ready` 为就绪检查，工具与认证器初始化完成时返回 `200`，否则返回 `503`。
+
+`/metrics` 提供 Prometheus 指标；设置 `METRICS_AUTH_TOKEN` 可要求独立的 Bearer Token，未设置时该端点免认证。`/health`、`/ready` 和未鉴权的 `/metrics` 应由部署层限制访问范围。
 
 - `LOG_HTTP_PAYLOADS`：是否记录所有 HTTP 请求 Body 与响应结果，默认 `false`。
 - `LOG_HTTP_PAYLOAD_MAX_BYTES`：单个请求或响应最多记录的字节数，默认 1 MiB；设为 `0` 表示完整记录且不截断。
@@ -30,13 +54,14 @@ HTTP/SSE 模式提供免认证运维探针：`/health` 为存活检查，进程�
 
 `file_search` 搜索服务器本地目录，使用独立的文件服务。通过 `FILE_SEARCH_ROOT` 指定搜索根目录；未配置时不注册此工具，已有工具的默认行为保持不变。
 
-只运行文件搜索服务：
+只运行文件搜索，或同时启用全部三个文件工具：
 
 ```bash
 FILE_SEARCH_ROOT=/srv/searchable-files MCP_ENABLED_TOOLS=file_search go run ./cmd/server/main.go
+FILE_SEARCH_ROOT=/srv/searchable-files MCP_ENABLED_TOOLS='file_*' go run ./cmd/server/main.go
 ```
 
-此模式不需要 `API_TOKEN`、`BASE_URL` 或 Wiki 配置。与其他工具一起运行时，设置 `FILE_SEARCH_ROOT` 并将文件工具加入现有 `MCP_ENABLED_TOOLS` 列表；未设置工具列表时会随现有工具一起注册。显式启用但未配置目录、或目录无法打开时，启动会报错。
+仅启用 `file_search`、`file_get_info`、`file_read_preview` 的任意组合时，不需要 `API_TOKEN`、`BASE_URL` 或 Wiki 配置。与非文件工具一起运行时，设置 `FILE_SEARCH_ROOT` 并将文件工具加入现有 `MCP_ENABLED_TOOLS` 列表；未设置工具列表时会随现有工具一起注册。显式启用但未配置目录、或目录无法打开时，启动会报错。
 
 `file_search` 默认使用 `builtin` 连续文本匹配。设置 `FILE_SEARCH_TOKENIZER=gse` 可启用 GSE 中文分词；`FILE_SEARCH_GSE_DICTIONARY` 可选 `zh`（默认）或 `zh_s`。GSE 模式只影响 `file_search`，不影响 `file_get_info`、`file_read_preview` 或 Wiki 搜索。
 
@@ -86,7 +111,7 @@ FILE_SEARCH_ROOT=/srv/searchable-files MCP_ENABLED_TOOLS=file_search go run ./cm
 
 HTTP MCP POST 请求体最大为 4 MiB，且必须在 30 秒内发送完成；超限会返回 HTTP 413，读取超时会拒绝请求并终止连接。该限制仅作用于 POST 请求体，不会截断 GET/SSE 长连接。远程 Token 验证缓存通过 `AUTH_REMOTE_CACHE_MAX_ENTRIES` 配置，默认最多 4096 条；该值必须为正整数。
 
-可通过 `MCP_ENABLED_TOOLS` 使用逗号分隔的工具白名单限制注册范围；未设置时注册全部工具，未知工具名会导致启动失败。
+可通过 `MCP_ENABLED_TOOLS` 使用逗号分隔的工具白名单限制注册范围，支持具体名称和 `wiki_*` 等已知工具前缀；未设置时注册全部可用工具，未知工具名会导致启动失败。
 
 熔断策略可通过 `UPSTREAM_CB_FAILURE_THRESHOLD`、`UPSTREAM_CB_COOLDOWN_SECONDS`、`UPSTREAM_CB_HALF_OPEN_PROBES` 配置，默认分别为 `5`、`10`、`1`；必须为正整数。
 
