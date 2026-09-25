@@ -40,7 +40,7 @@ func RegisterAll(s *mcp.Server, wikiConfigPaths ...string) error {
 	if err := registerFileSearch(s, enabledTools); err != nil {
 		return err
 	}
-	if enabledTools != nil && fileToolsEnabled(enabledTools) && len(enabledTools) == 1 {
+	if onlyFileTools(enabledTools) {
 		return nil
 	}
 	breakerSet, err := client.LoadCircuitBreakerSetFromEnv()
@@ -142,7 +142,7 @@ func registerWikiTools(s *mcp.Server, baseCfg client.Config, wikiConfig wikiback
 }
 
 var knownToolNames = map[string]struct{}{
-	"file_search":      {},
+	"file_search":   {},
 	"file_get_info": {}, "file_read_preview": {},
 	"student_search": {}, "student_order": {}, "student_exam": {}, "student_get": {},
 	"rag_search": {}, "staff_search": {}, "wiki_search": {}, "wiki_get_page": {},
@@ -187,6 +187,20 @@ func parseEnabledTools(raw string) (map[string]bool, error) {
 
 func toolEnabled(enabled map[string]bool, name string) bool {
 	return enabled == nil || enabled[name]
+}
+
+func onlyFileTools(enabled map[string]bool) bool {
+	if len(enabled) == 0 {
+		return false
+	}
+	for name := range enabled {
+		switch name {
+		case "file_search", "file_get_info", "file_read_preview":
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 type toolHandler[In any] func(

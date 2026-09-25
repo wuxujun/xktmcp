@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -46,6 +47,101 @@ func TestFileSearchStandalone(t *testing.T) {
 	encoded, err = json.Marshal(result.StructuredContent)
 	if err != nil || string(encoded) != `{"items":[]}` {
 		t.Fatalf("empty structured result=%s err=%v", encoded, err)
+	}
+}
+
+func TestFileToolsStandaloneAllowlist(t *testing.T) {
+	tests := []struct {
+		name      string
+		allowlist string
+		tokenizer string
+		want      []string
+	}{
+		{
+			name:      "two file tools",
+			allowlist: "file_search,file_get_info",
+			want:      []string{"file_get_info", "file_search"},
+		},
+		{
+			name:      "file wildcard",
+			allowlist: "file_*",
+			want:      []string{"file_get_info", "file_read_preview", "file_search"},
+		},
+		{
+			name:      "metadata tools with duplicate",
+			allowlist: "file_get_info,file_get_info,file_read_preview",
+			tokenizer: "unsupported",
+			want:      []string{"file_get_info", "file_read_preview"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("FILE_SEARCH_ROOT", t.TempDir())
+			t.Setenv("FILE_SEARCH_TOKENIZER", tt.tokenizer)
+			t.Setenv("MCP_ENABLED_TOOLS", tt.allowlist)
+			t.Setenv("API_TOKEN", "")
+			t.Setenv("BASE_URL", "")
+			unrelatedConfig := filepath.Join(t.TempDir(), "invalid.json")
+			if err := os.WriteFile(unrelatedConfig, []byte("invalid"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			ctx, session := connectRegisteredServer(t, unrelatedConfig)
+			listed, err := session.ListTools(ctx, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var names []string
+			for _, tool := range listed.Tools {
+				names = append(names, tool.Name)
+			}
+			slices.Sort(names)
+			if !slices.Equal(names, tt.want) {
+				t.Fatalf("registered tools = %v, want %v", names, tt.want)
+			}
+		})
+	}
+}
+
+func TestFileToolsMixedWithUpstreamStillRequiresToken(t *testing.T) {
+	t.Setenv("FILE_SEARCH_ROOT", t.TempDir())
+	t.Setenv("MCP_ENABLED_TOOLS", "file_search,student_search")
+	t.Setenv("API_TOKEN", "")
+	t.Setenv("BASE_URL", "")
+	server := mcp.NewServer(&mcp.Implementation{Name: "test-server", Version: "1.0.0"}, nil)
+	err := RegisterAll(server, filepath.Join(t.TempDir(), "missing.json"))
+	if err == nil || !strings.Contains(err.Error(), "missing required env API_TOKEN") {
+		t.Fatalf("mixed tool registration error = %v, want missing API_TOKEN", err)
+	}
+}
+
+func TestFileToolsMixedWithLocalWikiDoesNotRequireToken(t *testing.T) {
+	fileRoot := t.TempDir()
+	wikiRoot := t.TempDir()
+	if err := os.Mkdir(filepath.Join(wikiRoot, "content"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(wikiRoot, "wiki.json")
+	config := `{"mode":"local","local":{"root":".","content_dirs":["content"],"write_dir":"content"}}`
+	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FILE_SEARCH_ROOT", fileRoot)
+	t.Setenv("MCP_ENABLED_TOOLS", "file_search,wiki_search")
+	t.Setenv("API_TOKEN", "")
+	t.Setenv("BASE_URL", "")
+	ctx, session := connectRegisteredServer(t, configPath)
+	listed, err := session.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, tool := range listed.Tools {
+		names = append(names, tool.Name)
+	}
+	slices.Sort(names)
+	want := []string{"file_search", "wiki_search"}
+	if !slices.Equal(names, want) {
+		t.Fatalf("registered tools = %v, want %v", names, want)
 	}
 }
 
@@ -140,12 +236,14 @@ func TestFileSearchConfiguration(t *testing.T) {
 	if err != nil || len(set) != 3 || !set["file_search"] || !set["file_get_info"] || !set["file_read_preview"] {
 		t.Fatalf("allowlist file_*: set=%v err=%v", set, err)
 	}
-	for _, root := range []string{"", filepath.Join(t.TempDir(), "missing")} {
-		t.Setenv("FILE_SEARCH_ROOT", root)
-		t.Setenv("MCP_ENABLED_TOOLS", "file_search")
-		s := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "1"}, nil)
-		if err := RegisterAll(s); err == nil || !strings.Contains(err.Error(), "FILE_SEARCH_ROOT") {
-			t.Fatalf("root %q: err=%v", root, err)
+	for _, allowlist := range []string{"file_search", "file_*"} {
+		for _, root := range []string{"", filepath.Join(t.TempDir(), "missing")} {
+			t.Setenv("FILE_SEARCH_ROOT", root)
+			t.Setenv("MCP_ENABLED_TOOLS", allowlist)
+			s := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "1"}, nil)
+			if err := RegisterAll(s); err == nil || !strings.Contains(err.Error(), "FILE_SEARCH_ROOT") {
+				t.Fatalf("allowlist %q root %q: err=%v", allowlist, root, err)
+			}
 		}
 	}
 }
