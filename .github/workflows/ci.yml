@@ -99,6 +99,7 @@ jobs:
         run: |
           go build \
             -trimpath \
+            -tags=jsoniter \
             -ldflags="-s -w -X main.version=${{ github.sha }}" \
             -o mcp-server \
             ./cmd/server/main.go
@@ -107,6 +108,11 @@ jobs:
         run: |
           file mcp-server
           ls -lh mcp-server
+
+      - name: Smoke test release binary
+        env:
+          MCP_RELEASE_BINARY: ${{ github.workspace }}/mcp-server
+        run: go test ./cmd/server -run '^TestReleaseBinarySmoke$' -count=1 -timeout=30s
 
       - name: Upload binary artifact
         uses: actions/upload-artifact@v4
