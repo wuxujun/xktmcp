@@ -140,7 +140,8 @@ func main() {
 		}, nil)
 
 		requireAuth(authenticator, "sse")
-		bindings := newSessionBindings()
+		bindings := newSessionBindings(s)
+		defer bindings.Stop()
 		finalHandler := authenticator.Middleware(sseSessionBindingMiddleware(sseHandler, bindings))
 
 		mux := http.NewServeMux()
@@ -163,7 +164,8 @@ func main() {
 		handler := newStreamableHTTPHandler(s)
 
 		requireAuth(authenticator, "http")
-		bindings := newSessionBindings()
+		bindings := newSessionBindings(s)
+		defer bindings.Stop()
 		finalHandler := authenticator.Middleware(streamableSessionBindingMiddleware(handler, bindings))
 
 		mux := http.NewServeMux()
@@ -194,7 +196,8 @@ func newStreamableHTTPHandler(server *mcp.Server) http.Handler {
 		return server
 	}
 	legacyJSONHandler := mcp.NewStreamableHTTPHandler(getServer, &mcp.StreamableHTTPOptions{
-		JSONResponse: true,
+		JSONResponse:   true,
+		SessionTimeout: envDuration("MCP_SESSION_IDLE_TTL", defaultSessionBindingIdleTTL),
 	})
 	modernSSEHandler := mcp.NewStreamableHTTPHandler(getServer, &mcp.StreamableHTTPOptions{
 		Stateless: true,
@@ -738,7 +741,7 @@ func metricsAuthHandler(next http.Handler) http.Handler {
 	expected := strings.TrimSpace(os.Getenv("METRICS_AUTH_TOKEN"))
 	if expected == "" {
 		metricsTokenWarnOnce.Do(func() {
-			logger.Warnf("[Security] 未配置 METRICS_AUTH_TOKEN，/metrics 端点处于免密访问状态；建议生产部署配置该 Token 或实施网络层访问控制")
+			logger.Errorf("[Security] 未配置 METRICS_AUTH_TOKEN，/metrics 端点处于免密访问状态；建议生产部署配置该 Token 或实施网络层访问控制")
 		})
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -844,27 +847,44 @@ type sessionBindingEntry struct {
 	key        sessionBindingKey
 	identity   auth.SessionIdentity
 	lastActive time.Time
+	cancel     context.CancelFunc
 }
 
 type sessionBindings struct {
-	mu         sync.Mutex
-	items      map[sessionBindingKey]*list.Element
-	lru        *list.List
-	maxEntries int
-	ttl        time.Duration
-	now        func() time.Time
+	mu           sync.Mutex
+	items        map[sessionBindingKey]*list.Element
+	lru          *list.List
+	maxEntries   int
+	ttl          time.Duration
+	now          func() time.Time
+	closeSession func(sessionBindingKey)
 
 	janitorStop chan struct{}
 	stopOnce    sync.Once
 }
 
-func newSessionBindings() *sessionBindings {
+func newSessionBindings(servers ...*mcp.Server) *sessionBindings {
 	maxEntries, err := envPositiveInt("MCP_SESSION_BINDINGS_MAX_ENTRIES", defaultSessionBindingsMaxEntries)
 	if err != nil {
 		maxEntries = defaultSessionBindingsMaxEntries
 	}
 	ttl := envDuration("MCP_SESSION_IDLE_TTL", defaultSessionBindingIdleTTL)
-	return newSessionBindingsWithOptions(maxEntries, ttl, defaultSessionJanitorInterval, time.Now)
+	b := newSessionBindingsWithOptions(maxEntries, ttl, 0, time.Now)
+	if len(servers) > 0 && servers[0] != nil {
+		server := servers[0]
+		b.closeSession = func(key sessionBindingKey) {
+			for session := range server.Sessions() {
+				if session.ID() == key.sessionID {
+					if err := session.Close(); err != nil {
+						logger.Errorf("Close expired MCP session failed: transport=%s session_id=%s error=%v", key.transport, pii.MaskSubject(key.sessionID), err)
+					}
+					return
+				}
+			}
+		}
+	}
+	go b.janitor(defaultSessionJanitorInterval)
+	return b
 }
 
 func newSessionBindingsWithOptions(maxEntries int, ttl, janitorInterval time.Duration, now func() time.Time) *sessionBindings {
@@ -911,13 +931,18 @@ func (b *sessionBindings) janitor(interval time.Duration) {
 }
 
 func (b *sessionBindings) deleteExpired() {
+	var removed []*sessionBindingEntry
 	b.mu.Lock()
-	defer b.mu.Unlock()
+	defer func() {
+		b.mu.Unlock()
+		b.closeRemoved(removed)
+	}()
 	now := b.now()
 	for el := b.lru.Back(); el != nil; {
 		entry := el.Value.(*sessionBindingEntry)
 		prev := el.Prev()
 		if now.Sub(entry.lastActive) > b.ttl {
+			removed = append(removed, entry)
 			delete(b.items, entry.key)
 			b.lru.Remove(el)
 		}
@@ -925,14 +950,30 @@ func (b *sessionBindings) deleteExpired() {
 	}
 }
 
-func (b *sessionBindings) bind(transport sessionTransport, sessionID string, identity auth.SessionIdentity) bool {
+// 关闭 SDK 会话时可能等待请求完成；必须在释放绑定锁后执行。
+func (b *sessionBindings) closeRemoved(entries []*sessionBindingEntry) {
+	for _, entry := range entries {
+		if entry.cancel != nil {
+			// 旧 SSE SDK 不暴露会话 ID；取消 GET 上下文会关闭对应连接。
+			entry.cancel()
+		} else if b.closeSession != nil {
+			b.closeSession(entry.key)
+		}
+	}
+}
+
+func (b *sessionBindings) bind(transport sessionTransport, sessionID string, identity auth.SessionIdentity, cancels ...context.CancelFunc) bool {
 	if sessionID == "" || !identity.Equal(identity) {
 		return false
 	}
 
 	key := sessionBindingKey{transport: transport, sessionID: sessionID}
+	var removed []*sessionBindingEntry
 	b.mu.Lock()
-	defer b.mu.Unlock()
+	defer func() {
+		b.mu.Unlock()
+		b.closeRemoved(removed)
+	}()
 
 	now := b.now()
 	if el, exists := b.items[key]; exists {
@@ -940,6 +981,8 @@ func (b *sessionBindings) bind(transport sessionTransport, sessionID string, ide
 		if now.Sub(entry.lastActive) > b.ttl {
 			delete(b.items, key)
 			b.lru.Remove(el)
+			removed = append(removed, entry)
+			return false
 		} else {
 			if entry.identity.Equal(identity) {
 				entry.lastActive = now
@@ -955,11 +998,16 @@ func (b *sessionBindings) bind(transport sessionTransport, sessionID string, ide
 		identity:   identity,
 		lastActive: now,
 	}
+	if len(cancels) > 0 {
+		entry.cancel = cancels[0]
+	}
 	el := b.lru.PushFront(entry)
 	b.items[key] = el
 	for b.lru.Len() > b.maxEntries {
 		oldest := b.lru.Back()
-		delete(b.items, oldest.Value.(*sessionBindingEntry).key)
+		oldestEntry := oldest.Value.(*sessionBindingEntry)
+		removed = append(removed, oldestEntry)
+		delete(b.items, oldestEntry.key)
 		b.lru.Remove(oldest)
 	}
 	return true
@@ -967,8 +1015,12 @@ func (b *sessionBindings) bind(transport sessionTransport, sessionID string, ide
 
 func (b *sessionBindings) matches(transport sessionTransport, sessionID string, identity auth.SessionIdentity) bool {
 	key := sessionBindingKey{transport: transport, sessionID: sessionID}
+	var removed []*sessionBindingEntry
 	b.mu.Lock()
-	defer b.mu.Unlock()
+	defer func() {
+		b.mu.Unlock()
+		b.closeRemoved(removed)
+	}()
 
 	el, exists := b.items[key]
 	if !exists {
@@ -979,6 +1031,7 @@ func (b *sessionBindings) matches(transport sessionTransport, sessionID string, 
 	if now.Sub(entry.lastActive) > b.ttl {
 		delete(b.items, key)
 		b.lru.Remove(el)
+		removed = append(removed, entry)
 		return false
 	}
 	if !entry.identity.Equal(identity) {
@@ -1007,12 +1060,13 @@ func (b *sessionBindings) len() int {
 
 type streamableBindingWriter struct {
 	http.ResponseWriter
-	bindings    *sessionBindings
-	identity    auth.SessionIdentity
-	hasIdentity bool
-	committed   bool
-	blocked     bool
-	statusCode  int
+	bindings         *sessionBindings
+	identity         auth.SessionIdentity
+	hasIdentity      bool
+	requestSessionID string
+	committed        bool
+	blocked          bool
+	statusCode       int
 }
 
 func newStreamableBindingWriter(
@@ -1045,7 +1099,15 @@ func (w *streamableBindingWriter) WriteHeader(statusCode int) {
 		w.ResponseWriter.WriteHeader(statusCode)
 		return
 	}
-	if !w.hasIdentity || !w.bindings.bind(streamableSessionTransport, sessionID, w.identity) {
+	allowed := w.hasIdentity
+	if allowed {
+		if w.requestSessionID != "" {
+			allowed = sessionID == w.requestSessionID && w.bindings.matches(streamableSessionTransport, sessionID, w.identity)
+		} else {
+			allowed = w.bindings.bind(streamableSessionTransport, sessionID, w.identity)
+		}
+	}
+	if !allowed {
 		w.blocked = true
 		w.statusCode = http.StatusForbidden
 		w.Header().Del("Mcp-Session-Id")
@@ -1086,6 +1148,7 @@ func streamableSessionBindingMiddleware(next http.Handler, bindings *sessionBind
 			return
 		}
 		writer := newStreamableBindingWriter(w, bindings, identity, hasIdentity)
+		writer.requestSessionID = sessionID
 		next.ServeHTTP(writer, r)
 		if r.Method == http.MethodDelete && sessionID != "" &&
 			(writer.statusCode == 0 || writer.statusCode >= 200 && writer.statusCode < 300) {
@@ -1104,6 +1167,7 @@ type sseEndpointBindingWriter struct {
 	sessionID   string
 	ready       bool
 	blocked     bool
+	cancel      context.CancelFunc
 }
 
 func newSSEEndpointBindingWriter(
@@ -1164,7 +1228,7 @@ func (w *sseEndpointBindingWriter) Write(p []byte) (int, error) {
 			w.reject(sessionID, sseRejectMissingIdentity)
 			return len(p), nil
 		}
-		if !w.bindings.bind(sseSessionTransport, sessionID, w.identity) {
+		if !w.bindings.bind(sseSessionTransport, sessionID, w.identity, w.cancel) {
 			w.reject(sessionID, sseRejectSessionBinding)
 			return len(p), nil
 		}
@@ -1287,7 +1351,11 @@ func sseSessionBindingMiddleware(next http.Handler, bindings *sessionBindings) h
 			return
 		}
 
+		ctx, cancel := context.WithCancel(r.Context())
+		defer cancel()
+		r = r.WithContext(ctx)
 		writer := newSSEEndpointBindingWriter(w, bindings, identity, hasIdentity)
+		writer.cancel = cancel
 		defer func() {
 			if writer.sessionID != "" {
 				bindings.delete(sseSessionTransport, writer.sessionID)

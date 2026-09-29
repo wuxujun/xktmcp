@@ -74,10 +74,11 @@ FILE_SEARCH_ROOT=/srv/shared-files MCP_ENABLED_TOOLS='file_*,wiki_search,wiki_ge
 ## 4. 身份、目录与网络边界
 
 - `AUTH_TENANTS` 的租户 `user_id` 或远程验证响应中的 `userid` 是可信身份，可约束请求 `userId`。共享 `AUTH_TOKEN`、IP 白名单和 stdio 中的 `userId` 只是路由数据；不能据此建立用户目录隔离。租户 `allowed_tools` 还会约束 Wiki Resources；全局 `MCP_ENABLED_TOOLS` 控制注册范围，两者应分别检查。
+- 未绑定可信主体的网络 Wiki 请求不读写共享缓存，始终经过后端权限校验：本地严格映射模式拒绝私有目录访问，非严格模式回退公共目录。租户主体和 stdio 请求仍可复用缓存。
 - 使用远程验证时，`AUTH_REMOTE_VERIFY_URL` 的主机必须列入 `AUTH_REMOTE_ALLOWED_HOSTS`，否则启动失败。未命中缓存的远程验证内置双层令牌桶防护（全局限流与单 IP 频次限制 `AUTH_REMOTE_IP_RATE_RPS` / `AUTH_REMOTE_IP_RATE_BURST`），防范恶意请求穿透与全局配额耗尽。使用 `AUTH_IP_ALLOWLIST` 时填写可信 CIDR；只有请求确实经过受控代理并防止客户端伪造转发头时，才启用 `AUTH_TRUST_FORWARDED_HEADER`。
 - 本地 Wiki 的 `write_dir` 必须位于允许的 `content_dirs` 内。文件工具的 `FILE_SEARCH_ROOT` 是共享目录，所有获准调用文件工具的用户可见；只挂载可共享的文件。启用 `wiki_upsert_page` 前确认写入目录、备份与权限。
 - `/health`、`/ready` 默认免认证，分别反映进程存活与初始化完成；`/ready` 不持续检查上游。`/metrics` 可设置 `METRICS_AUTH_TOKEN` 使用独立 Bearer Token，未设置时无认证。网络入口应限制这些端点的访问范围。
-- 有状态 SSE 和旧版 Streamable HTTP 会话需要在多实例入口保持会话粘性；切换 Bearer Token 后客户端应丢弃旧会话并重连。会话绑定表具备 LRU 容量上限（`MCP_SESSION_BINDINGS_MAX_ENTRIES`，默认 10000）与空闲超时自动清理（`MCP_SESSION_IDLE_TTL`，默认 1 小时），防止死连接长期占用堆内存。`2026-07-28` Streamable HTTP 为无状态模式。反向代理需允许长连接，同时设置适合部署环境的连接数与请求头读取保护。
+- 有状态 SSE 和旧版 Streamable HTTP 会话需要在多实例入口保持会话粘性；切换 Bearer Token 后客户端应丢弃旧会话并重连。会话绑定表具备 LRU 容量上限（`MCP_SESSION_BINDINGS_MAX_ENTRIES`，默认 10000）与空闲超时自动清理（`MCP_SESSION_IDLE_TTL`，默认 1 小时）。绑定淘汰或过期时关闭对应 SDK 会话，SSE 通过取消连接上下文回收；旧版 Streamable HTTP 的 SDK 也使用同一空闲 TTL。客户端遇到过期或淘汰会话的 403/404 响应后应重新初始化。`2026-07-28` Streamable HTTP 为无状态模式。反向代理需允许长连接，同时设置适合部署环境的连接数与请求头读取保护。
 - MCP POST 请求体上限为 4 MiB，读取期限为 30 秒。`LOG_HTTP_PAYLOADS` 默认关闭；开启后可能把业务请求与响应内容写入日志，生产环境只应在受控排障期间启用。不要在命令输出、发布记录或日志中打印实际令牌。
 
 ## 5. 隔离环境验收

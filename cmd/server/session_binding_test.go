@@ -11,6 +11,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/wuxujun/xktmcp/internal/auth"
 	"github.com/wuxujun/xktmcp/internal/logger"
@@ -919,4 +920,3 @@ func TestSessionBindingsJanitorCleanup(t *testing.T) {
 		t.Fatalf("len = %d, want 0 after janitor cleanup", bindings.len())
 	}
 }
-

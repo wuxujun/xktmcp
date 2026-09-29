@@ -21,6 +21,26 @@ import (
 
 var wikiCache = sharedCache
 
+// 网络请求只有绑定可信主体后才可复用缓存，避免客户端伪造 userId
+// 绕过后端路由的权限校验，或将公共回退结果写入私有用户的缓存。
+func wikiCacheAllowed(ctx context.Context) bool {
+	return trace.RequestOriginFromContext(ctx) != trace.OriginNetwork ||
+		trace.AuthenticatedUserIDFromContext(ctx) != ""
+}
+
+func getWikiCache(ctx context.Context, key string) (any, bool) {
+	if !wikiCacheAllowed(ctx) {
+		return nil, false
+	}
+	return wikiCache.Get(key)
+}
+
+func setWikiCache(ctx context.Context, key string, item toolResultItem, ttl time.Duration) {
+	if wikiCacheAllowed(ctx) {
+		wikiCache.Set(key, item, ttl)
+	}
+}
+
 const (
 	wikiSearchTTL = 2 * time.Minute
 	wikiPageTTL   = 5 * time.Minute
@@ -173,7 +193,7 @@ func WikiSearchHandler(
 		// A fixed string tuple cannot fail JSON encoding and preserves field boundaries.
 		fields, _ := json.Marshal([4]string{query, category, fmt.Sprint(topK), resourceLinkBaseURL})
 		cacheKey := wikiSearchCachePrefix(userID) + string(fields)
-		if val, ok := wikiCache.Get(cacheKey); ok {
+		if val, ok := getWikiCache(ctx, cacheKey); ok {
 			cached := val.(toolResultItem)
 			logger.InfofCtx(ctx, "[Cache] wiki_search hit cache: query=%s", pii.MaskSubject(query))
 			metrics.ObserveCacheAccess("wiki_search", true)
@@ -212,7 +232,7 @@ func WikiSearchHandler(
 			Content: content,
 		}
 		structured := map[string]any{"items": redacted}
-		wikiCache.Set(cacheKey, toolResultItem{result: res, data: structured}, wikiSearchTTL)
+		setWikiCache(ctx, cacheKey, toolResultItem{result: res, data: structured}, wikiSearchTTL)
 		return res, structured, nil
 	}
 }
@@ -225,7 +245,7 @@ func WikiGetPageHandler(
 		logger.ToolfCtx(ctx, "wiki_get_page", "querier=%s page_id=%s title=%s", userID, pii.MaskSubject(args.PageID), pii.MaskSubject(args.Title))
 
 		cacheKey := encodeCacheKey("wiki:page", userID, args.PageID, args.Title)
-		if val, ok := wikiCache.Get(cacheKey); ok {
+		if val, ok := getWikiCache(ctx, cacheKey); ok {
 			cached := val.(toolResultItem)
 			logger.InfofCtx(ctx, "[Cache] wiki_get_page hit cache: page_id=%s title=%s", args.PageID, args.Title)
 			metrics.ObserveCacheAccess("wiki_get_page", true)
@@ -249,7 +269,7 @@ func WikiGetPageHandler(
 				&mcp.TextContent{Text: text},
 			},
 		}
-		wikiCache.Set(cacheKey, toolResultItem{result: res, data: redacted}, wikiPageTTL)
+		setWikiCache(ctx, cacheKey, toolResultItem{result: res, data: redacted}, wikiPageTTL)
 		return res, redacted, nil
 	}
 }
@@ -267,7 +287,7 @@ func WikiListTreeHandler(
 		}
 
 		cacheKey := encodeCacheKey("wiki:tree", userID, args.ParentID, depth)
-		if val, ok := wikiCache.Get(cacheKey); ok {
+		if val, ok := getWikiCache(ctx, cacheKey); ok {
 			cached := val.(toolResultItem)
 			logger.InfofCtx(ctx, "[Cache] wiki_list_tree hit cache: parent_id=%s", args.ParentID)
 			metrics.ObserveCacheAccess("wiki_list_tree", true)
@@ -292,7 +312,7 @@ func WikiListTreeHandler(
 			},
 		}
 		structured := map[string]any{"items": redacted}
-		wikiCache.Set(cacheKey, toolResultItem{result: res, data: structured}, wikiTreeTTL)
+		setWikiCache(ctx, cacheKey, toolResultItem{result: res, data: structured}, wikiTreeTTL)
 		return res, structured, nil
 	}
 }
