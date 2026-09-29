@@ -56,3 +56,28 @@ func TestFileServiceNamesContentInfoAndPreview(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestTokenizedFileSearchStreamingSnippet(t *testing.T) {
+	root := t.TempDir()
+	content := "首段介绍。\n这里包含特殊的检索词条项，提供按需摘要提取功能。\n尾段说明。"
+	writeSearchFile(t, root, "streaming.txt", content)
+
+	svc, err := NewFileServiceWithOptions(root, FileSearchOptions{Tokenizer: FileSearchTokenizerBuiltin})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	results, err := svc.Search(context.Background(), "检索词条", "content", 10)
+	if err != nil {
+		t.Fatalf("search error: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if !strings.Contains(results[0].Snippet, "检索词条") {
+		t.Fatalf("expected snippet to contain match, got %q", results[0].Snippet)
+	}
+	if results[0].Path != "streaming.txt" {
+		t.Fatalf("expected path streaming.txt, got %s", results[0].Path)
+	}
+}

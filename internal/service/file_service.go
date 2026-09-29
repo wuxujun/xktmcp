@@ -51,10 +51,8 @@ type fileSearchTokenizer interface {
 type fileSearchDocument struct {
 	name         string
 	title        string
-	content      string
 	lowerName    string
 	lowerTitle   string
-	lowerContent string
 	size         int64
 	modTime      int64
 	metadata     string
@@ -623,6 +621,12 @@ func (s *FileService) searchTokenized(ctx context.Context, query, searchIn strin
 	if err != nil {
 		return nil, err
 	}
+	root, err := os.OpenRoot(s.root)
+	if err != nil {
+		return nil, fmt.Errorf("open file search directory: %w", err)
+	}
+	defer func() { _ = root.Close() }()
+
 	terms := s.tokenizer.Terms(query)
 	candidates := make(map[string]struct{})
 	addTermCandidates := func(terms []string) {
@@ -646,8 +650,7 @@ func (s *FileService) searchTokenized(ctx context.Context, query, searchIn strin
 	}
 	for _, name := range index.paths {
 		doc := index.files[name]
-		if (searchIn != "content" && (strings.Contains(doc.lowerName, query) || strings.Contains(doc.lowerTitle, query))) ||
-			(searchIn != "title" && strings.Contains(doc.lowerContent, query)) {
+		if searchIn != "content" && (strings.Contains(doc.lowerName, query) || strings.Contains(doc.lowerTitle, query)) {
 			candidates[name] = struct{}{}
 		}
 	}
@@ -673,7 +676,7 @@ func (s *FileService) searchTokenized(ctx context.Context, query, searchIn strin
 			fields = append(fields, "content")
 		}
 		item := model.FileSearchResult{
-			Path: name, Title: doc.title, Snippet: fileSearchSnippetWithTerms(doc.content, doc.lowerContent, query, terms),
+			Path: name, Title: doc.title,
 			MatchedFields: fields, SizeBytes: doc.size,
 		}
 		pos := sort.Search(len(items), func(i int) bool {
@@ -692,6 +695,14 @@ func (s *FileService) searchTokenized(ctx context.Context, query, searchIn strin
 			}
 		}
 	}
+
+	for i := range items {
+		if data, err := readSearchFile(root, items[i].Path); err == nil && data != nil {
+			content := strings.TrimPrefix(string(data), "\ufeff")
+			items[i].Snippet = fileSearchSnippetWithTerms(content, query, terms)
+		}
+	}
+
 	return items, nil
 }
 
@@ -783,21 +794,32 @@ func loadFileSearchDocument(root *os.Root, name string, info fs.FileInfo, tokeni
 			doc.searchable = false
 			return doc, true, nil
 		}
-		doc.content = strings.TrimPrefix(string(data), "\ufeff")
+		content := strings.TrimPrefix(string(data), "\ufeff")
 		if ext := strings.ToLower(path.Ext(name)); ext == ".md" || ext == ".markdown" {
-			doc.title = fileMarkdownTitle(doc.content, doc.title)
+			doc.title = fileMarkdownTitle(content, doc.title)
 		}
+		doc.contentTerms = uniqueSortedTerms(tokenizer.ContentTerms(content))
 	}
 	doc.lowerName = strings.ToLower(doc.name)
 	doc.lowerTitle = strings.ToLower(doc.title)
-	doc.lowerContent = strings.ToLower(doc.content)
-	doc.nameTerms = tokenizer.Terms(doc.name)
-	doc.titleTerms = tokenizer.Terms(doc.title)
-	doc.contentTerms = tokenizer.ContentTerms(doc.content)
-	sort.Strings(doc.nameTerms)
-	sort.Strings(doc.titleTerms)
-	sort.Strings(doc.contentTerms)
+	doc.nameTerms = uniqueSortedTerms(tokenizer.Terms(doc.name))
+	doc.titleTerms = uniqueSortedTerms(tokenizer.Terms(doc.title))
 	return doc, true, nil
+}
+
+func uniqueSortedTerms(terms []string) []string {
+	if len(terms) == 0 {
+		return nil
+	}
+	sort.Strings(terms)
+	j := 0
+	for i := 1; i < len(terms); i++ {
+		if terms[i] != terms[j] {
+			j++
+			terms[j] = terms[i]
+		}
+	}
+	return terms[:j+1]
 }
 
 func fileSearchMetadata(info fs.FileInfo) string {
@@ -847,7 +869,7 @@ func fileSearchDocumentMatches(doc fileSearchDocument, query string, terms []str
 	}
 	contentMatch := false
 	if searchIn != "title" {
-		contentMatch = strings.Contains(doc.lowerContent, query) || fileSearchHasAnyTerm(doc.contentTerms, terms)
+		contentMatch = fileSearchHasAnyTerm(doc.contentTerms, terms)
 	}
 	return titleMatch, contentMatch
 }
@@ -926,7 +948,8 @@ func fileSearchSnippet(content, lowerContent, query string) string {
 	return fileSearchSnippetAt(content, lowerContent, strings.Index(lowerContent, query))
 }
 
-func fileSearchSnippetWithTerms(content, lowerContent, query string, terms []string) string {
+func fileSearchSnippetWithTerms(content, query string, terms []string) string {
+	lowerContent := strings.ToLower(content)
 	index := strings.Index(lowerContent, query)
 	if index < 0 {
 		for _, term := range terms {
