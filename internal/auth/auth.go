@@ -67,10 +67,13 @@ type Config struct {
 	// TrustForwardedHeader 决定【安全决策所用】来源 IP 的取值方式:
 	//   false(默认,安全):只认 TCP 连接 of RemoteAddr,杜绝伪造 X-Forwarded-For/
 	//                       X-Real-IP 头来冒充可信网段从而绕过认证。
-	//   true:信任 X-Forwarded-For(首个)→ X-Real-IP → RemoteAddr。
-	//        【仅当】服务部署在会重写/剥离该头的可信反向代理之后才可开启,
-	//        否则任意客户端都能伪造来源 IP 绕过 Bearer 认证。
+	//   true:仅信任 TrustedProxyCIDRs 内的 TCP 对端，从右向左解析 X-Forwarded-For
+	//        中的可信代理链；没有 XFF 时使用单个 X-Real-IP。
 	TrustForwardedHeader bool
+	// TrustedProxyCIDRs 只声明哪些代理可提供客户端 IP，不授予免令牌访问权限。
+	// 开启 TrustForwardedHeader 时必须配置；代理必须覆盖 X-Real-IP，或向 XFF
+	// 末尾追加真实 TCP 客户端 IP。
+	TrustedProxyCIDRs []*net.IPNet
 
 	// 以下均有合理默认值。
 	PositiveTTL       time.Duration // 远程验证通过结果的缓存时长
@@ -213,6 +216,9 @@ func (a *Authenticator) Enabled() bool {
 // New 构造 Authenticator,并对远程验证 URL 做白名单校验。
 func New(cfg Config) (*Authenticator, error) {
 	const defaultRemoteCacheMaxEntries = 4096
+	if cfg.TrustForwardedHeader && len(cfg.TrustedProxyCIDRs) == 0 {
+		return nil, fmt.Errorf("trusted proxy CIDRs are required when forwarded headers are enabled")
+	}
 
 	if cfg.PositiveTTL <= 0 {
 		cfg.PositiveTTL = 5 * time.Minute
@@ -401,11 +407,9 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 
 		// 3) 远程兜底(带缓存/白名单/限流)。
 		if a.remoteOK {
-			clientIP := ""
+			clientIP := "unknown"
 			if secIP := a.securityClientIP(r); secIP != nil {
 				clientIP = secIP.String()
-			} else {
-				clientIP = ip
 			}
 			if ok, userID := a.verifyRemote(r.Context(), token, clientIP); ok {
 				ctx := r.Context()
@@ -451,30 +455,47 @@ func ClientIP(r *http.Request) string {
 // 与仅用于日志审计的 ClientIP 刻意区分:
 //   - TrustForwardedHeader=false(默认):只认 TCP 连接的 RemoteAddr,
 //     无视任何可被客户端伪造的 X-Forwarded-For/X-Real-IP 头。
-//   - TrustForwardedHeader=true:优先 X-Forwarded-For(首个)→ X-Real-IP → RemoteAddr。
-//     仅在服务位于会重写该头的可信代理之后时才应开启。
+//   - TrustForwardedHeader=true:仅从受信代理接收转发头，从右向左剥离可信
+//     代理链，停在第一个非代理地址；没有 XFF 时使用单个 X-Real-IP。
+//     无法解析转发信息时回退真实 TCP 对端，不使用仅供日志的 ClientIP。
 func (a *Authenticator) securityClientIP(r *http.Request) net.IP {
-	if a.cfg.TrustForwardedHeader {
-		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-			first := xff
-			if i := strings.IndexByte(xff, ','); i >= 0 {
-				first = xff[:i]
-			}
-			if ip := net.ParseIP(strings.TrimSpace(first)); ip != nil {
-				return ip
-			}
-		}
-		if xrip := strings.TrimSpace(r.Header.Get("X-Real-IP")); xrip != "" {
-			if ip := net.ParseIP(xrip); ip != nil {
-				return ip
-			}
-		}
-	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		host = r.RemoteAddr
 	}
-	return net.ParseIP(strings.TrimSpace(host))
+	peer := net.ParseIP(strings.TrimSpace(host))
+	if peer == nil || !a.cfg.TrustForwardedHeader || !a.proxyTrusted(peer) {
+		return peer
+	}
+	if values := r.Header.Values("X-Forwarded-For"); len(values) > 0 {
+		hops := strings.Split(strings.Join(values, ","), ",")
+		client := peer
+		for i := len(hops) - 1; i >= 0; i-- {
+			if !a.proxyTrusted(client) {
+				return client
+			}
+			client = net.ParseIP(strings.TrimSpace(hops[i]))
+			if client == nil {
+				return peer
+			}
+		}
+		return client
+	}
+	if values := r.Header.Values("X-Real-IP"); len(values) == 1 {
+		if ip := net.ParseIP(strings.TrimSpace(values[0])); ip != nil {
+			return ip
+		}
+	}
+	return peer
+}
+
+func (a *Authenticator) proxyTrusted(ip net.IP) bool {
+	for _, cidr := range a.cfg.TrustedProxyCIDRs {
+		if cidr != nil && cidr.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 // ipAllowed 报告 ip 是否命中任一受信任网段。

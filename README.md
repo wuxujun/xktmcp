@@ -42,7 +42,7 @@ API_TOKEN=your-upstream-token AUTH_TOKEN=your-mcp-token LOG_HTTP_PAYLOADS=true L
 
 HTTP/SSE 模式提供免认证运维探针：`/health` 为存活检查，进程可响应时返回 `200`；`/ready` 为就绪检查，工具与认证器初始化完成时返回 `200`，否则返回 `503`。
 
-`/metrics` 提供 Prometheus 指标；设置 `METRICS_AUTH_TOKEN` 可要求独立的 Bearer Token，未设置时该端点免认证。`/health`、`/ready` 和未鉴权的 `/metrics` 应由部署层限制访问范围。
+`/metrics` 提供 Prometheus 指标，必须设置独立的 `METRICS_AUTH_TOKEN`；未设置或仅包含空白时返回 HTTP 503，不输出指标。配置后缺少或错误 Bearer Token 返回 HTTP 401，正确 Token 返回指标。`/health`、`/ready` 仍由部署层限制访问范围。
 
 - `LOG_HTTP_PAYLOADS`：是否记录所有 HTTP 请求 Body 与响应结果，默认 `false`。
 - `LOG_HTTP_PAYLOAD_MAX_BYTES`：单个请求或响应最多记录的字节数，默认 1 MiB；设为 `0` 表示完整记录且不截断。
@@ -111,6 +111,8 @@ FILE_SEARCH_ROOT=/srv/searchable-files MCP_ENABLED_TOOLS='file_*' go run ./cmd/s
 
 HTTP MCP POST 请求体最大为 4 MiB，且必须在 30 秒内发送完成；超限会返回 HTTP 413，读取超时会拒绝请求并终止连接。该限制仅作用于 POST 请求体，不会截断 GET/SSE 长连接。远程 Token 验证缓存通过 `AUTH_REMOTE_CACHE_MAX_ENTRIES` 配置，默认最多 4096 条；该值必须为正整数。未命中缓存的远程验证采用双层防护，可通过 `AUTH_REMOTE_IP_RATE_RPS` 与 `AUTH_REMOTE_IP_RATE_BURST` 配置单 IP 频次限制（默认突发 3，速率 2 RPS，且不超过全局上限），防止恶意 IP 刷爆全局令牌桶引发 DoS。
 
+代理部署需同时设置 `AUTH_TRUST_FORWARDED_HEADER=true` 与 `AUTH_TRUSTED_PROXY_CIDRS`（逗号分隔的代理 CIDR，例如 `192.0.2.10/32,192.0.2.11/32`），使远程鉴权限流按真实客户端 IP 分配额度。只开启转发头信任但未配置代理网段时拒绝启动。服务仅接收可信 TCP 对端的转发信息，从右向左解析 `X-Forwarded-For`，停在第一个非代理地址；没有该头时使用单个 `X-Real-IP`。代理必须覆盖 `X-Real-IP` 或向 `X-Forwarded-For` 末尾追加真实客户端 IP。非法转发信息回退 TCP 对端，未受信连接的转发头被忽略。可信代理网段只应用于代理地址，不授予 `AUTH_IP_ALLOWLIST` 的免令牌访问权限；同一真实出口 IP 的用户仍共享单 IP 限额。
+
 可通过 `MCP_ENABLED_TOOLS` 使用逗号分隔的工具白名单限制注册范围，支持具体名称和 `wiki_*` 等已知工具前缀；未设置时注册全部可用工具，未知工具名会导致启动失败。
 
 熔断策略可通过 `UPSTREAM_CB_FAILURE_THRESHOLD`、`UPSTREAM_CB_COOLDOWN_SECONDS`、`UPSTREAM_CB_HALF_OPEN_PROBES` 配置，默认分别为 `5`、`10`、`1`；必须为正整数。
@@ -143,6 +145,10 @@ The `userId` used with a shared `AUTH_TOKEN`, IP allowlist, or stdio transport i
 Stateful SSE and legacy Streamable HTTP sessions are bound to the credential used to establish them. Switching or rotating a Bearer token within an existing session returns HTTP 403; discard that session and reconnect with the new credential. Streamable HTTP negotiated as `2026-07-28` is stateless and creates no session binding; stdio creates no binding either. Session bindings enforce an LRU capacity bound (default 10000 entries, configurable via `MCP_SESSION_BINDINGS_MAX_ENTRIES`) and idle timeout eviction (default 1 hour, configurable via `MCP_SESSION_IDLE_TTL`, scanned every 5 minutes) to prevent orphaned sessions from leaking memory.
 
 HTTP MCP POST bodies are limited to 4 MiB and must be received within 30 seconds; oversized bodies receive HTTP 413, while timed-out bodies are rejected and the connection is terminated. This deadline applies only to POST bodies and does not truncate GET/SSE streams. Configure the remote-token verification cache with `AUTH_REMOTE_CACHE_MAX_ENTRIES`; it defaults to 4096 entries and must be a positive integer. Remote verification also enforces per-IP rate limiting via `AUTH_REMOTE_IP_RATE_RPS` and `AUTH_REMOTE_IP_RATE_BURST` (default burst 3, rate 2 RPS, bounded by global limits) to protect the global token bucket from single-client DoS attacks.
+
+`/metrics` requires a separate `METRICS_AUTH_TOKEN`. An unset or whitespace-only value disables metrics with HTTP 503. Once configured, requests with missing or incorrect Bearer tokens receive HTTP 401.
+
+Behind a proxy, set both `AUTH_TRUST_FORWARDED_HEADER=true` and `AUTH_TRUSTED_PROXY_CIDRS` to the proxy addresses, for example `192.0.2.10/32,192.0.2.11/32`. Enabling forwarded headers without trusted proxy CIDRs fails startup. Only trusted TCP peers may supply client IPs: `X-Forwarded-For` is parsed from right to left until the first non-proxy address, with a single `X-Real-IP` used only when XFF is absent. Proxies must overwrite X-Real-IP or append the actual client IP to XFF. Invalid forwarding data falls back to the TCP peer; headers from untrusted peers are ignored. Proxy CIDRs do not grant the token-free access provided by `AUTH_IP_ALLOWLIST`. Clients sharing an actual NAT address still share the per-IP quota.
 
 Use `MCP_ENABLED_TOOLS` with a comma-separated allowlist to limit which MCP tools are registered. When unset, all tools are registered; an unknown tool name fails startup.
 

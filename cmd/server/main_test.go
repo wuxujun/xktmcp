@@ -56,6 +56,38 @@ func TestBuildAuthConfigRejectsInvalidRemoteCacheTTL(t *testing.T) {
 	}
 }
 
+func TestBuildAuthConfigTrustedProxyCIDRs(t *testing.T) {
+	t.Setenv("AUTH_TRUST_FORWARDED_HEADER", "true")
+	t.Setenv("AUTH_IP_ALLOWLIST", "")
+	for _, tc := range []struct {
+		name      string
+		cidrs     string
+		wantError bool
+	}{
+		{"ipv4_ipv6", "10.0.0.10/32, 2001:db8::10/128", false},
+		{"invalid", "10.0.0.10/32, invalid", true},
+		{"missing", "", true},
+		{"empty_entries", " , ", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("AUTH_TRUSTED_PROXY_CIDRS", tc.cidrs)
+			cfg, err := buildAuthConfig("token")
+			if err == nil {
+				_, err = auth.New(cfg)
+			}
+			if (err != nil) != tc.wantError {
+				t.Fatalf("error=%v, wantError=%v", err, tc.wantError)
+			}
+			if !tc.wantError && (!cfg.TrustForwardedHeader || len(cfg.TrustedProxyCIDRs) != 2) {
+				t.Fatalf("proxy configuration not preserved: trust=%v cidrs=%v", cfg.TrustForwardedHeader, cfg.TrustedProxyCIDRs)
+			}
+			if !tc.wantError && len(cfg.AllowedCIDRs) != 0 {
+				t.Fatal("trusted proxy configuration granted IP allowlist access")
+			}
+		})
+	}
+}
+
 func TestMetricsAuthHandler(t *testing.T) {
 	next := metrics.Handler()
 	t.Setenv("METRICS_AUTH_TOKEN", "secret")
@@ -81,15 +113,25 @@ func TestMetricsAuthHandler(t *testing.T) {
 		})
 	}
 
-	t.Run("unconfigured_allows_access", func(t *testing.T) {
-		t.Setenv("METRICS_AUTH_TOKEN", "")
-		rr := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
-		metricsAuthHandler(next).ServeHTTP(rr, req)
-		if rr.Code != http.StatusOK {
-			t.Fatalf("status=%d, want 200", rr.Code)
-		}
-	})
+	for _, token := range []string{"", " \t "} {
+		t.Run("unconfigured_denies_access", func(t *testing.T) {
+			t.Setenv("METRICS_AUTH_TOKEN", token)
+			calls := 0
+			guarded := metricsAuthHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				next.ServeHTTP(w, r)
+			}))
+			for _, header := range []string{"", "Bearer secret"} {
+				rr := httptest.NewRecorder()
+				req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+				req.Header.Set("Authorization", header)
+				guarded.ServeHTTP(rr, req)
+				if rr.Code != http.StatusServiceUnavailable || calls != 0 {
+					t.Fatalf("status=%d calls=%d, want 503 and no metrics access", rr.Code, calls)
+				}
+			}
+		})
+	}
 }
 
 func TestReadinessHandler(t *testing.T) {

@@ -75,9 +75,9 @@ FILE_SEARCH_ROOT=/srv/shared-files MCP_ENABLED_TOOLS='file_*,wiki_search,wiki_ge
 
 - `AUTH_TENANTS` 的租户 `user_id` 或远程验证响应中的 `userid` 是可信身份，可约束请求 `userId`。共享 `AUTH_TOKEN`、IP 白名单和 stdio 中的 `userId` 只是路由数据；不能据此建立用户目录隔离。租户 `allowed_tools` 还会约束 Wiki Resources；全局 `MCP_ENABLED_TOOLS` 控制注册范围，两者应分别检查。
 - 未绑定可信主体的网络 Wiki 请求不读写共享缓存，始终经过后端权限校验：本地严格映射模式拒绝私有目录访问，非严格模式回退公共目录。租户主体和 stdio 请求仍可复用缓存。
-- 使用远程验证时，`AUTH_REMOTE_VERIFY_URL` 的主机必须列入 `AUTH_REMOTE_ALLOWED_HOSTS`，否则启动失败。未命中缓存的远程验证内置双层令牌桶防护（全局限流与单 IP 频次限制 `AUTH_REMOTE_IP_RATE_RPS` / `AUTH_REMOTE_IP_RATE_BURST`），防范恶意请求穿透与全局配额耗尽。使用 `AUTH_IP_ALLOWLIST` 时填写可信 CIDR；只有请求确实经过受控代理并防止客户端伪造转发头时，才启用 `AUTH_TRUST_FORWARDED_HEADER`。
+- 使用远程验证时，`AUTH_REMOTE_VERIFY_URL` 的主机必须列入 `AUTH_REMOTE_ALLOWED_HOSTS`，否则启动失败。未命中缓存的远程验证内置全局限流与单 IP 频次限制（`AUTH_REMOTE_IP_RATE_RPS` / `AUTH_REMOTE_IP_RATE_BURST`）。代理部署需同时设置 `AUTH_TRUST_FORWARDED_HEADER=true` 与 `AUTH_TRUSTED_PROXY_CIDRS`（仅包含实际代理地址，例如 `192.0.2.10/32,192.0.2.11/32`），否则代理后的用户共享 TCP 对端限额。启用转发头但未配置可信代理 CIDR 时拒绝启动；非法 CIDR 同样拒绝启动。服务仅信任指定 TCP 对端，从右向左解析 XFF 代理链，停在第一个非代理地址；没有 XFF 时使用单个 X-Real-IP。代理必须覆盖 X-Real-IP 或向 XFF 末尾追加真实客户端 IP。可信代理 CIDR 与授予免令牌访问的 `AUTH_IP_ALLOWLIST` 分开配置；同一真实 NAT 出口的用户仍共享单 IP 额度。
 - 本地 Wiki 的 `write_dir` 必须位于允许的 `content_dirs` 内。文件工具的 `FILE_SEARCH_ROOT` 是共享目录，所有获准调用文件工具的用户可见；只挂载可共享的文件。启用 `wiki_upsert_page` 前确认写入目录、备份与权限。
-- `/health`、`/ready` 默认免认证，分别反映进程存活与初始化完成；`/ready` 不持续检查上游。`/metrics` 可设置 `METRICS_AUTH_TOKEN` 使用独立 Bearer Token，未设置时无认证。网络入口应限制这些端点的访问范围。
+- `/health`、`/ready` 默认免认证，分别反映进程存活与初始化完成；`/ready` 不持续检查上游。`/metrics` 必须设置独立 `METRICS_AUTH_TOKEN`，未设置或仅空白时返回 503 并禁用指标输出，配置后缺少或错误 Token 返回 401。现有监控采集端需要配置对应 Bearer Token，修改环境变量后重启服务。网络入口仍应限制这些端点的访问范围。
 - 有状态 SSE 和旧版 Streamable HTTP 会话需要在多实例入口保持会话粘性；切换 Bearer Token 后客户端应丢弃旧会话并重连。会话绑定表具备 LRU 容量上限（`MCP_SESSION_BINDINGS_MAX_ENTRIES`，默认 10000）与空闲超时自动清理（`MCP_SESSION_IDLE_TTL`，默认 1 小时）。绑定淘汰或过期时关闭对应 SDK 会话，SSE 通过取消连接上下文回收；旧版 Streamable HTTP 的 SDK 也使用同一空闲 TTL。客户端遇到过期或淘汰会话的 403/404 响应后应重新初始化。`2026-07-28` Streamable HTTP 为无状态模式。反向代理需允许长连接，同时设置适合部署环境的连接数与请求头读取保护。
 - MCP POST 请求体上限为 4 MiB，读取期限为 30 秒。`LOG_HTTP_PAYLOADS` 默认关闭；开启后可能把业务请求与响应内容写入日志，生产环境只应在受控排障期间启用。不要在命令输出、发布记录或日志中打印实际令牌。
 
@@ -85,7 +85,7 @@ FILE_SEARCH_ROOT=/srv/shared-files MCP_ENABLED_TOOLS='file_*,wiki_search,wiki_ge
 
 1. 使用占位凭据以外的测试凭据和临时目录，在隔离环境按配置矩阵启动目标模式；确认进程未因缺少配置而退出。纯文件和本地 Wiki 场景不应需要 `API_TOKEN`。
 2. 使用经过认证的 MCP 客户端完成 `initialize`、`tools/list`；核对只出现白名单内工具。只读 Wiki 场景不应出现 `wiki_upsert_page`，纯文件场景不应出现上游工具。
-3. 网络模式检查 `/health` 和 `/ready` 返回 `200`。若设置 `METRICS_AUTH_TOKEN`，确认未携带指标令牌时 `/metrics` 返回 `401`；同时验证 MCP 请求缺少认证时被拒绝。
+3. 网络模式检查 `/health` 和 `/ready` 返回 `200`。未设置 `METRICS_AUTH_TOKEN` 时 `/metrics` 应返回 `503`；配置后无令牌或错误令牌返回 `401`，正确令牌返回 `200`。同时验证 MCP 请求缺少认证时被拒绝。代理部署还应验证不同真实客户端 IP 具有独立限额、直连请求伪造 XFF 不能绕过鉴权和限流。
 4. 验证一个失败配置：纯文件模式缺少 `FILE_SEARCH_ROOT` 应启动失败；本地 Wiki 模式使用无效配置或缺失目录也应失败。配置文件完全缺失会回退到远程模式，须单独核对并避免误连上游。
 5. 记录使用的提交号、配置种类、工具清单及探针结果；不记录真实令牌、业务查询或包含个人信息的返回内容。上游模式的实际数据联调应在授权的独立环境完成。
 

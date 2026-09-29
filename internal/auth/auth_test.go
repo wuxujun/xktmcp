@@ -609,11 +609,12 @@ func TestIPAllowlistForwardedHeaderNotTrustedByDefault(t *testing.T) {
 	}
 }
 
-// 部署在可信代理后:开启 TrustForwardedHeader 后按 XFF 首个地址判定。
+// 部署在可信代理后:开启转发头信任并显式声明代理网段。
 func TestIPAllowlistForwardedHeaderTrusted(t *testing.T) {
 	a := mustAuthenticator(t, Config{
 		AllowedCIDRs:         mustCIDRs(t, "160.79.104.0/21"),
 		TrustForwardedHeader: true,
+		TrustedProxyCIDRs:    mustCIDRs(t, "10.0.0.1/32"),
 	})
 	// 代理连接(RemoteAddr 为代理 IP,在网段外),XFF 首个为真实客户端(网段内)→ 放行。
 	hdr := map[string]string{"X-Forwarded-For": "160.79.105.7, 10.0.0.1"}

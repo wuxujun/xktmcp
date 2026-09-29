@@ -148,7 +148,7 @@ func main() {
 		// 健康检查端点(免认证,供探针使用)
 		mux.HandleFunc("/health", healthHandler)
 		mux.Handle("/ready", readinessHandler(ready.Load))
-		// Prometheus 指标端点(免认证,供抓取;如需保护可置于网络隔离或反代后)
+		// Prometheus 指标端点必须配置独立 Token，未配置时拒绝访问。
 		mux.Handle("/metrics", metricsAuthHandler(metrics.Handler()))
 		// 客户端连接 /sse 路径来建立事件流
 		mux.Handle("/sse", userIDMiddleware(finalHandler))
@@ -172,7 +172,7 @@ func main() {
 		// 健康检查端点(免认证,供探针使用)
 		mux.HandleFunc("/health", healthHandler)
 		mux.Handle("/ready", readinessHandler(ready.Load))
-		// Prometheus 指标端点(免认证,供抓取;如需保护可置于网络隔离或反代后)
+		// Prometheus 指标端点必须配置独立 Token，未配置时拒绝访问。
 		mux.Handle("/metrics", metricsAuthHandler(metrics.Handler()))
 		// Streamable HTTP 默认通过单一路径处理
 		mux.Handle("/mcp", userIDMiddleware(finalHandler))
@@ -261,7 +261,8 @@ func isLegacyProtocolVersion(version string) bool {
 //
 // IP 白名单(AUTH_IP_ALLOWLIST,逗号分隔 CIDR)默认【关闭】;配置后,
 // 命中网段的请求直接放行、无需 Bearer 令牌。来源 IP 默认取 TCP 连接的 RemoteAddr,
-// 仅当 AUTH_TRUST_FORWARDED_HEADER=true(部署在可信代理之后)时才信任 X-Forwarded-For。
+// 仅当 AUTH_TRUST_FORWARDED_HEADER=true 且连接来自 AUTH_TRUSTED_PROXY_CIDRS
+// 指定的代理时才使用转发头；可信代理网段不授予免令牌访问权限。
 func buildAuthConfig(localToken string) (auth.Config, error) {
 	var allowed []string
 	if raw := strings.TrimSpace(os.Getenv("AUTH_REMOTE_ALLOWED_HOSTS")); raw != "" {
@@ -280,6 +281,14 @@ func buildAuthConfig(localToken string) (auth.Config, error) {
 			return auth.Config{}, fmt.Errorf("parse AUTH_IP_ALLOWLIST: %w", err)
 		}
 		cidrs = parsed
+	}
+	var trustedProxyCIDRs []*net.IPNet
+	if raw := strings.TrimSpace(os.Getenv("AUTH_TRUSTED_PROXY_CIDRS")); raw != "" {
+		parsed, err := auth.ParseCIDRs(strings.Split(raw, ","))
+		if err != nil {
+			return auth.Config{}, fmt.Errorf("parse AUTH_TRUSTED_PROXY_CIDRS: %w", err)
+		}
+		trustedProxyCIDRs = parsed
 	}
 
 	// 解析多租户配置
@@ -319,6 +328,7 @@ func buildAuthConfig(localToken string) (auth.Config, error) {
 		AllowedHosts:          allowed,
 		AllowedCIDRs:          cidrs,
 		TrustForwardedHeader:  envBool("AUTH_TRUST_FORWARDED_HEADER"),
+		TrustedProxyCIDRs:     trustedProxyCIDRs,
 		RemoteCacheMaxEntries: remoteCacheMaxEntries,
 		PositiveTTL:           positiveTTL,
 		NegativeTTL:           negativeTTL,
@@ -741,17 +751,19 @@ func metricsAuthHandler(next http.Handler) http.Handler {
 	expected := strings.TrimSpace(os.Getenv("METRICS_AUTH_TOKEN"))
 	if expected == "" {
 		metricsTokenWarnOnce.Do(func() {
-			logger.Errorf("[Security] 未配置 METRICS_AUTH_TOKEN，/metrics 端点处于免密访问状态；建议生产部署配置该 Token 或实施网络层访问控制")
+			logger.Errorf("[Security] 未配置 METRICS_AUTH_TOKEN，/metrics 已禁用；配置独立 Token 并重启服务后启用")
 		})
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if expected != "" {
-			provided := auth.BearerFromHeader(r)
-			if subtle.ConstantTimeCompare([]byte(provided), []byte(expected)) != 1 {
-				w.Header().Set("WWW-Authenticate", `Bearer realm="metrics"`)
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
-				return
-			}
+		if expected == "" {
+			http.Error(w, "metrics endpoint is disabled", http.StatusServiceUnavailable)
+			return
+		}
+		provided := auth.BearerFromHeader(r)
+		if subtle.ConstantTimeCompare([]byte(provided), []byte(expected)) != 1 {
+			w.Header().Set("WWW-Authenticate", `Bearer realm="metrics"`)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
 		}
 		next.ServeHTTP(w, r)
 	})
