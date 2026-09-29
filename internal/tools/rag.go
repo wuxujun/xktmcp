@@ -235,8 +235,10 @@ func RagSearchHandler(
 			includeChunks = *args.IncludeChunks
 		}
 
-		cacheKey := fmt.Sprintf("rag:search:%s:%s:%d:%.4f:%t:%t:%t",
-			userID, args.Query, topK, minScore, args.Rewrite, includeSources, includeChunks)
+		cacheKey := encodeCacheKey(
+			"rag:search",
+			userID, args.Query, topK, minScore, args.Rewrite, includeSources, includeChunks,
+		)
 
 		if val, ok := ragCache.Get(cacheKey); ok {
 			cached := val.(ragCacheItem)

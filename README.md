@@ -47,7 +47,7 @@ HTTP/SSE 模式提供免认证运维探针：`/health` 为存活检查，进程�
 - `LOG_HTTP_PAYLOADS`：是否记录所有 HTTP 请求 Body 与响应结果，默认 `false`。
 - `LOG_HTTP_PAYLOAD_MAX_BYTES`：单个请求或响应最多记录的字节数，默认 1 MiB；设为 `0` 表示完整记录且不截断。
 - 对应命令行参数为 `-log-http-payloads` 与 `-log-http-payload-max-bytes`，命令行参数优先。
-- 开启后使用 `category=http`、`direction=request|response`、`request_body`、`response_body` 等结构化字段。生产环境仅应在受控排障期间开启。
+- 开启后使用 `category=http`、`direction=request|response`、`request_body`、`response_body` 等结构化字段；记录前自动执行手机号与身份证号脱敏（`pii.Redact`），防止敏感数据明文落盘。生产环境仅应在受控排障期间开启。
 - 请求元信息日志始终包含安全化的 `request_headers`，并单独提供 `mcp_protocol_version`、`mcp_session_id`、`mcp_method`；认证、Cookie 和 API Key 类 Header 仅记录为 `[REDACTED]`。
 
 ### 独立本地文件搜索
@@ -107,9 +107,9 @@ FILE_SEARCH_ROOT=/srv/searchable-files MCP_ENABLED_TOOLS='file_*' go run ./cmd/s
 
 共享 `AUTH_TOKEN`、IP 白名单和 stdio 模式中的 `userId` 仅是路由元数据，并不代表经过认证的用户身份。不要把这类 `userId` 用作授权或安全边界。
 
-有状态 SSE 和 legacy Streamable HTTP 会话会绑定到建连时的认证凭据。同一会话中切换或轮换 Bearer Token 会返回 HTTP 403；客户端必须丢弃旧会话并使用新凭据重新连接。`2026-07-28` Streamable HTTP 为无状态模式，不创建会话绑定；stdio 同样不创建绑定。
+有状态 SSE 和 legacy Streamable HTTP 会话会绑定到建连时的认证凭据。同一会话中切换或轮换 Bearer Token 会返回 HTTP 403；客户端必须丢弃旧会话并使用新凭据重新连接。`2026-07-28` Streamable HTTP 为无状态模式，不创建会话绑定；stdio 同样不创建绑定。会话绑定表具备 LRU 容量上限（默认 10000 条，可通过 `MCP_SESSION_BINDINGS_MAX_ENTRIES` 调整）与空闲超时自动清理（默认 1 小时，可通过 `MCP_SESSION_IDLE_TTL` 调整，后台每 5 分钟扫描），防止死连接造成内存泄露。
 
-HTTP MCP POST 请求体最大为 4 MiB，且必须在 30 秒内发送完成；超限会返回 HTTP 413，读取超时会拒绝请求并终止连接。该限制仅作用于 POST 请求体，不会截断 GET/SSE 长连接。远程 Token 验证缓存通过 `AUTH_REMOTE_CACHE_MAX_ENTRIES` 配置，默认最多 4096 条；该值必须为正整数。
+HTTP MCP POST 请求体最大为 4 MiB，且必须在 30 秒内发送完成；超限会返回 HTTP 413，读取超时会拒绝请求并终止连接。该限制仅作用于 POST 请求体，不会截断 GET/SSE 长连接。远程 Token 验证缓存通过 `AUTH_REMOTE_CACHE_MAX_ENTRIES` 配置，默认最多 4096 条；该值必须为正整数。未命中缓存的远程验证采用双层防护，可通过 `AUTH_REMOTE_IP_RATE_RPS` 与 `AUTH_REMOTE_IP_RATE_BURST` 配置单 IP 频次限制（默认突发 3，速率 2 RPS，且不超过全局上限），防止恶意 IP 刷爆全局令牌桶引发 DoS。
 
 可通过 `MCP_ENABLED_TOOLS` 使用逗号分隔的工具白名单限制注册范围，支持具体名称和 `wiki_*` 等已知工具前缀；未设置时注册全部可用工具，未知工具名会导致启动失败。
 
@@ -140,9 +140,9 @@ The optional tenant `user_id` is a trusted authenticated principal. A `userid` r
 
 The `userId` used with a shared `AUTH_TOKEN`, IP allowlist, or stdio transport is routing metadata only, not an authenticated user identity. Do not use it for authorization or as a security boundary.
 
-Stateful SSE and legacy Streamable HTTP sessions are bound to the credential used to establish them. Switching or rotating a Bearer token within an existing session returns HTTP 403; discard that session and reconnect with the new credential. Streamable HTTP negotiated as `2026-07-28` is stateless and creates no session binding; stdio creates no binding either.
+Stateful SSE and legacy Streamable HTTP sessions are bound to the credential used to establish them. Switching or rotating a Bearer token within an existing session returns HTTP 403; discard that session and reconnect with the new credential. Streamable HTTP negotiated as `2026-07-28` is stateless and creates no session binding; stdio creates no binding either. Session bindings enforce an LRU capacity bound (default 10000 entries, configurable via `MCP_SESSION_BINDINGS_MAX_ENTRIES`) and idle timeout eviction (default 1 hour, configurable via `MCP_SESSION_IDLE_TTL`, scanned every 5 minutes) to prevent orphaned sessions from leaking memory.
 
-HTTP MCP POST bodies are limited to 4 MiB and must be received within 30 seconds; oversized bodies receive HTTP 413, while timed-out bodies are rejected and the connection is terminated. This deadline applies only to POST bodies and does not truncate GET/SSE streams. Configure the remote-token verification cache with `AUTH_REMOTE_CACHE_MAX_ENTRIES`; it defaults to 4096 entries and must be a positive integer.
+HTTP MCP POST bodies are limited to 4 MiB and must be received within 30 seconds; oversized bodies receive HTTP 413, while timed-out bodies are rejected and the connection is terminated. This deadline applies only to POST bodies and does not truncate GET/SSE streams. Configure the remote-token verification cache with `AUTH_REMOTE_CACHE_MAX_ENTRIES`; it defaults to 4096 entries and must be a positive integer. Remote verification also enforces per-IP rate limiting via `AUTH_REMOTE_IP_RATE_RPS` and `AUTH_REMOTE_IP_RATE_BURST` (default burst 3, rate 2 RPS, bounded by global limits) to protect the global token bucket from single-client DoS attacks.
 
 Use `MCP_ENABLED_TOOLS` with a comma-separated allowlist to limit which MCP tools are registered. When unset, all tools are registered; an unknown tool name fails startup.
 

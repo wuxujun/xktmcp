@@ -41,7 +41,7 @@ func StaffSearchHandler(
 		userID := trace.EffectiveUserID(ctx, args.UserID)
 		logger.ToolfCtx(ctx, "staff_search", "querier=%s subject=%s", userID, pii.MaskSubject(args.Query))
 
-		cacheKey := fmt.Sprintf("staff:search:%s:%s", userID, args.Query)
+		cacheKey := encodeCacheKey("staff:search", userID, args.Query)
 		if val, ok := sharedCache.Get(cacheKey); ok {
 			cached := val.(toolResultItem)
 			logger.InfofCtx(ctx, "[Cache] staff_search hit cache: query=%s", args.Query)

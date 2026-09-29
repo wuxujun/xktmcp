@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"container/list"
 	"context"
 	"crypto/subtle"
 	"encoding/json"
@@ -298,6 +299,14 @@ func buildAuthConfig(localToken string) (auth.Config, error) {
 	if err != nil {
 		return auth.Config{}, err
 	}
+	remoteIPRateRPS, err := envPositiveFloat("AUTH_REMOTE_IP_RATE_RPS", 0)
+	if err != nil {
+		return auth.Config{}, err
+	}
+	remoteIPRateBurst, err := envPositiveInt("AUTH_REMOTE_IP_RATE_BURST", 0)
+	if err != nil {
+		return auth.Config{}, err
+	}
 
 	return auth.Config{
 		LocalToken:            localToken,
@@ -310,6 +319,8 @@ func buildAuthConfig(localToken string) (auth.Config, error) {
 		RemoteCacheMaxEntries: remoteCacheMaxEntries,
 		PositiveTTL:           positiveTTL,
 		NegativeTTL:           negativeTTL,
+		RemoteIPRateRPS:       remoteIPRateRPS,
+		RemoteIPRateBurst:     remoteIPRateBurst,
 	}, nil
 }
 
@@ -348,6 +359,26 @@ func envPositiveInt(key string, fallback int) (int, error) {
 		return 0, fmt.Errorf("%s must be a positive integer", key)
 	}
 	return value, nil
+}
+
+func envPositiveFloat(key string, fallback float64) (float64, error) {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback, nil
+	}
+	value, err := strconv.ParseFloat(raw, 64)
+	if err != nil || value <= 0 {
+		return 0, fmt.Errorf("%s must be a positive float", key)
+	}
+	return value, nil
+}
+
+func envDuration(key string, fallback time.Duration) time.Duration {
+	d, err := envPositiveDuration(key)
+	if err != nil || d <= 0 {
+		return fallback
+	}
+	return d
 }
 
 func envInt64(key string, fallback int64) int64 {
@@ -583,7 +614,7 @@ func requestLoggingMiddleware(next http.Handler, config httpPayloadLogConfig) ht
 				Reader: io.MultiReader(bytes.NewReader(prefix), originalBody),
 				Closer: originalBody,
 			}
-			requestFields["request_body"] = capture.String()
+			requestFields["request_body"] = pii.Redact(capture.String())
 			requestFields["request_body_truncated"] = capture.truncated
 			requestFields["request_body_logged_bytes"] = capture.body.Len()
 			if readErr != nil {
@@ -606,7 +637,7 @@ func requestLoggingMiddleware(next http.Handler, config httpPayloadLogConfig) ht
 			"latency_ms": time.Since(startedAt).Milliseconds(),
 		}
 		if responseCapture != nil {
-			responseFields["response_body"] = responseCapture.String()
+			responseFields["response_body"] = pii.Redact(responseCapture.String())
 			responseFields["response_body_truncated"] = responseCapture.truncated
 			responseFields["response_body_bytes"] = responseCapture.total
 			responseFields["response_body_logged_bytes"] = responseCapture.body.Len()
@@ -701,11 +732,18 @@ func healthHandler(w http.ResponseWriter, _ *http.Request) {
 	_, _ = w.Write([]byte(`{"status":"ok"}`))
 }
 
+var metricsTokenWarnOnce sync.Once
+
 func metricsAuthHandler(next http.Handler) http.Handler {
+	expected := strings.TrimSpace(os.Getenv("METRICS_AUTH_TOKEN"))
+	if expected == "" {
+		metricsTokenWarnOnce.Do(func() {
+			logger.Warnf("[Security] 未配置 METRICS_AUTH_TOKEN，/metrics 端点处于免密访问状态；建议生产部署配置该 Token 或实施网络层访问控制")
+		})
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		expected := strings.TrimSpace(os.Getenv("METRICS_AUTH_TOKEN"))
 		if expected != "" {
-			provided := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+			provided := auth.BearerFromHeader(r)
 			if subtle.ConstantTimeCompare([]byte(provided), []byte(expected)) != 1 {
 				w.Header().Set("WWW-Authenticate", `Bearer realm="metrics"`)
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -791,18 +829,100 @@ var (
 	errSSEEndpointNoSessionID  = errors.New("SSE endpoint event has no session ID")
 )
 
+const (
+	defaultSessionBindingsMaxEntries = 10000
+	defaultSessionBindingIdleTTL     = time.Hour
+	defaultSessionJanitorInterval    = 5 * time.Minute
+)
+
 type sessionBindingKey struct {
 	transport sessionTransport
 	sessionID string
 }
 
+type sessionBindingEntry struct {
+	key        sessionBindingKey
+	identity   auth.SessionIdentity
+	lastActive time.Time
+}
+
 type sessionBindings struct {
-	mu    sync.Mutex
-	items map[sessionBindingKey]auth.SessionIdentity
+	mu         sync.Mutex
+	items      map[sessionBindingKey]*list.Element
+	lru        *list.List
+	maxEntries int
+	ttl        time.Duration
+	now        func() time.Time
+
+	janitorStop chan struct{}
+	stopOnce    sync.Once
 }
 
 func newSessionBindings() *sessionBindings {
-	return &sessionBindings{items: make(map[sessionBindingKey]auth.SessionIdentity)}
+	maxEntries, err := envPositiveInt("MCP_SESSION_BINDINGS_MAX_ENTRIES", defaultSessionBindingsMaxEntries)
+	if err != nil {
+		maxEntries = defaultSessionBindingsMaxEntries
+	}
+	ttl := envDuration("MCP_SESSION_IDLE_TTL", defaultSessionBindingIdleTTL)
+	return newSessionBindingsWithOptions(maxEntries, ttl, defaultSessionJanitorInterval, time.Now)
+}
+
+func newSessionBindingsWithOptions(maxEntries int, ttl, janitorInterval time.Duration, now func() time.Time) *sessionBindings {
+	if maxEntries <= 0 {
+		maxEntries = defaultSessionBindingsMaxEntries
+	}
+	if ttl <= 0 {
+		ttl = defaultSessionBindingIdleTTL
+	}
+	if now == nil {
+		now = time.Now
+	}
+	b := &sessionBindings{
+		items:       make(map[sessionBindingKey]*list.Element),
+		lru:         list.New(),
+		maxEntries:  maxEntries,
+		ttl:         ttl,
+		now:         now,
+		janitorStop: make(chan struct{}),
+	}
+	if janitorInterval > 0 {
+		go b.janitor(janitorInterval)
+	}
+	return b
+}
+
+func (b *sessionBindings) Stop() {
+	b.stopOnce.Do(func() {
+		close(b.janitorStop)
+	})
+}
+
+func (b *sessionBindings) janitor(interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			b.deleteExpired()
+		case <-b.janitorStop:
+			return
+		}
+	}
+}
+
+func (b *sessionBindings) deleteExpired() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	now := b.now()
+	for el := b.lru.Back(); el != nil; {
+		entry := el.Value.(*sessionBindingEntry)
+		prev := el.Prev()
+		if now.Sub(entry.lastActive) > b.ttl {
+			delete(b.items, entry.key)
+			b.lru.Remove(el)
+		}
+		el = prev
+	}
 }
 
 func (b *sessionBindings) bind(transport sessionTransport, sessionID string, identity auth.SessionIdentity) bool {
@@ -812,29 +932,77 @@ func (b *sessionBindings) bind(transport sessionTransport, sessionID string, ide
 
 	key := sessionBindingKey{transport: transport, sessionID: sessionID}
 	b.mu.Lock()
-	bound, exists := b.items[key]
-	if !exists {
-		b.items[key] = identity
-		b.mu.Unlock()
-		return true
+	defer b.mu.Unlock()
+
+	now := b.now()
+	if el, exists := b.items[key]; exists {
+		entry := el.Value.(*sessionBindingEntry)
+		if now.Sub(entry.lastActive) > b.ttl {
+			delete(b.items, key)
+			b.lru.Remove(el)
+		} else {
+			if entry.identity.Equal(identity) {
+				entry.lastActive = now
+				b.lru.MoveToFront(el)
+				return true
+			}
+			return false
+		}
 	}
-	b.mu.Unlock()
-	return bound.Equal(identity)
+
+	entry := &sessionBindingEntry{
+		key:        key,
+		identity:   identity,
+		lastActive: now,
+	}
+	el := b.lru.PushFront(entry)
+	b.items[key] = el
+	for b.lru.Len() > b.maxEntries {
+		oldest := b.lru.Back()
+		delete(b.items, oldest.Value.(*sessionBindingEntry).key)
+		b.lru.Remove(oldest)
+	}
+	return true
 }
 
 func (b *sessionBindings) matches(transport sessionTransport, sessionID string, identity auth.SessionIdentity) bool {
 	key := sessionBindingKey{transport: transport, sessionID: sessionID}
 	b.mu.Lock()
-	bound, exists := b.items[key]
-	b.mu.Unlock()
-	return exists && bound.Equal(identity)
+	defer b.mu.Unlock()
+
+	el, exists := b.items[key]
+	if !exists {
+		return false
+	}
+	entry := el.Value.(*sessionBindingEntry)
+	now := b.now()
+	if now.Sub(entry.lastActive) > b.ttl {
+		delete(b.items, key)
+		b.lru.Remove(el)
+		return false
+	}
+	if !entry.identity.Equal(identity) {
+		return false
+	}
+	entry.lastActive = now
+	b.lru.MoveToFront(el)
+	return true
 }
 
 func (b *sessionBindings) delete(transport sessionTransport, sessionID string) {
 	key := sessionBindingKey{transport: transport, sessionID: sessionID}
 	b.mu.Lock()
-	delete(b.items, key)
-	b.mu.Unlock()
+	defer b.mu.Unlock()
+	if el, exists := b.items[key]; exists {
+		delete(b.items, key)
+		b.lru.Remove(el)
+	}
+}
+
+func (b *sessionBindings) len() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return len(b.items)
 }
 
 type streamableBindingWriter struct {

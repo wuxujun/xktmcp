@@ -2,6 +2,9 @@ package tools
 
 import (
 	"container/list"
+	"encoding/base64"
+	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -189,3 +192,29 @@ func (c *MemoryCache) deleteExpired() {
 // sharedCache 是各工具复用的同一层缓存。不同工具用 "<tool>:<op>:<参数>" 命名空间隔离键,
 // 共用一个容量上限与一个 janitor goroutine(即用户所说「复用同一层」)。
 var sharedCache = NewMemoryCache()
+
+// encodeCacheKey 构造消除冒号冲突的缓存键。
+// 对变长字符串使用 Base64 (RawURLEncoding) 编码，数值与布尔值使用标准字符串转换，
+// 从而彻底防止入参中包含冒号（`:`）导致键冲突或跨租户/参数越权污染。
+func encodeCacheKey(prefix string, parts ...any) string {
+	var b strings.Builder
+	b.WriteString(prefix)
+	for _, p := range parts {
+		b.WriteByte(':')
+		switch v := p.(type) {
+		case string:
+			b.WriteString(base64.RawURLEncoding.EncodeToString([]byte(v)))
+		case int:
+			b.WriteString(strconv.Itoa(v))
+		case int64:
+			b.WriteString(strconv.FormatInt(v, 10))
+		case bool:
+			b.WriteString(strconv.FormatBool(v))
+		case float64:
+			b.WriteString(strconv.FormatFloat(v, 'f', 4, 64))
+		default:
+			b.WriteString(base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprint(v))))
+		}
+	}
+	return b.String()
+}

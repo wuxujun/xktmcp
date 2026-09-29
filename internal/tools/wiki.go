@@ -224,7 +224,7 @@ func WikiGetPageHandler(
 		userID := trace.EffectiveUserID(ctx, args.UserID)
 		logger.ToolfCtx(ctx, "wiki_get_page", "querier=%s page_id=%s title=%s", userID, pii.MaskSubject(args.PageID), pii.MaskSubject(args.Title))
 
-		cacheKey := fmt.Sprintf("wiki:page:%s:%s:%s", userID, args.PageID, args.Title)
+		cacheKey := encodeCacheKey("wiki:page", userID, args.PageID, args.Title)
 		if val, ok := wikiCache.Get(cacheKey); ok {
 			cached := val.(toolResultItem)
 			logger.InfofCtx(ctx, "[Cache] wiki_get_page hit cache: page_id=%s title=%s", args.PageID, args.Title)
@@ -266,7 +266,7 @@ func WikiListTreeHandler(
 			depth = 3
 		}
 
-		cacheKey := fmt.Sprintf("wiki:tree:%s:%s:%d", userID, args.ParentID, depth)
+		cacheKey := encodeCacheKey("wiki:tree", userID, args.ParentID, depth)
 		if val, ok := wikiCache.Get(cacheKey); ok {
 			cached := val.(toolResultItem)
 			logger.InfofCtx(ctx, "[Cache] wiki_list_tree hit cache: parent_id=%s", args.ParentID)

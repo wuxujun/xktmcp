@@ -1,0 +1,32 @@
+{
+  "filesystem": {
+    "allowWrite": [
+      "/Users/xujunwu/.bash_profile",
+      "/Users/xujunwu/Documents/IDEAProject/xktmcp/cmd/server/main.go",
+      "/Users/xujunwu/Documents/IDEAProject/xktmcp/cmd/server/session_binding_test.go",
+      "/Users/xujunwu/Documents/IDEAProject/xktmcp/docs/security-vulnerability-analysis.md",
+      "/Users/xujunwu/Documents/IDEAProject/xktmcp/docs/project-analysis-report.md",
+      "/Users/xujunwu/Documents/IDEAProject/xktmcp/README.md",
+      "/Users/xujunwu/Documents/IDEAProject/xktmcp/docs/deployment-guide.md",
+      "/Users/xujunwu/Documents/IDEAProject/xktmcp/PROJECT_ANALYSIS.md",
+      "/Users/xujunwu/Documents/IDEAProject/xktmcp/internal/trace/trace.go",
+      "/Users/xujunwu/Documents/IDEAProject/xktmcp/internal/auth/auth.go",
+      "/Users/xujunwu/Documents/IDEAProject/xktmcp/internal/wiki/local_router.go",
+      "/Users/xujunwu/Documents/IDEAProject/xktmcp/internal/wiki/local_router_test.go",
+      "/Users/xujunwu/Documents/IDEAProject/xktmcp/cmd/server/main_test.go",
+      "/Users/xujunwu/Documents/IDEAProject/xktmcp/internal/tools/cache.go",
+      "/Users/xujunwu/Documents/IDEAProject/xktmcp/internal/tools/student.go",
+      "/Users/xujunwu/Documents/IDEAProject/xktmcp/internal/tools/staff.go",
+      "/Users/xujunwu/Documents/IDEAProject/xktmcp/internal/tools/wiki.go",
+      "/Users/xujunwu/Documents/IDEAProject/xktmcp/internal/tools/rag.go",
+      "/Users/xujunwu/Documents/IDEAProject/xktmcp/internal/tools/cache_test.go",
+      "/Users/xujunwu/Documents/IDEAProject/xktmcp/internal/service/file_service.go",
+      "/Users/xujunwu/Documents/IDEAProject/xktmcp/internal/service/file_service_extra_test.go"
+    ]
+  },
+  "network": {
+    "allowedDomains": [
+      "proxy.golang.org"
+    ]
+  }
+}

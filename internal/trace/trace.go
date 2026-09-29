@@ -111,3 +111,25 @@ func EffectiveUserID(ctx context.Context, explicit string) string {
 	}
 	return strings.TrimSpace(UserIDFromContext(ctx))
 }
+
+type requestOriginKey struct{}
+
+const (
+	OriginStdio   = "stdio"
+	OriginNetwork = "network"
+)
+
+// WithRequestOrigin 标记请求的传输来源 (stdio 或 network)
+func WithRequestOrigin(ctx context.Context, origin string) context.Context {
+	return context.WithValue(ctx, requestOriginKey{}, origin)
+}
+
+// RequestOriginFromContext 获取当前请求的传输来源
+func RequestOriginFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	origin, _ := ctx.Value(requestOriginKey{}).(string)
+	return origin
+}
+

@@ -362,6 +362,135 @@ func TestRemoteVerifyRateLimit(t *testing.T) {
 	}
 }
 
+// 远程兜底:单 IP 限流能够有效拦截单个恶意 IP，防止其耗尽全局令牌桶，保证其他正常 IP 正常鉴权。
+func TestRemoteVerifyPerIPRateLimitProtectsGlobalBucket(t *testing.T) {
+	var calls int32
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		authHeader := r.Header.Get("Authorization")
+		if strings.Contains(authHeader, "valid-token") {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"userid":"good-user"}`))
+			return
+		}
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer backend.Close()
+
+	host := strings.TrimPrefix(backend.URL, "http://")
+	a := mustAuthenticator(t, Config{
+		RemoteVerifyURL:   backend.URL,
+		AllowedHosts:      []string{host},
+		NegativeTTL:       time.Minute,
+		PositiveTTL:       time.Minute,
+		RemoteRateRPS:     10,
+		RemoteRateBurst:   10, // 全局桶容量 10
+		RemoteIPRateRPS:   1,
+		RemoteIPRateBurst: 2, // 单 IP 最多突发 2 次未命中远程验证
+	})
+
+	ipMalicious := "198.51.100.1"
+	ipLegitimate := "198.51.100.2"
+
+	reqFrom := func(ip, token string) *http.Request {
+		r := httptest.NewRequest(http.MethodGet, "/test", nil)
+		r.RemoteAddr = net.JoinHostPort(ip, "12345")
+		r.Header.Set("Authorization", "Bearer "+token)
+		return r
+	}
+
+	// 恶意 IP 发送第 1 个无效 token -> 消耗自身 burst(剩 1), 消耗全局(剩 9), 打后端 1 次
+	code1 := serve(a, reqFrom(ipMalicious, "attack-token-1"))
+	if code1 != http.StatusUnauthorized {
+		t.Fatalf("期望 401, 实际 %d", code1)
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("第 1 次攻击请求应打后端, 实际调用 %d", got)
+	}
+
+	// 恶意 IP 发送第 2 个无效 token -> 消耗自身 burst(剩 0), 消耗全局(剩 8), 打后端 2 次
+	code2 := serve(a, reqFrom(ipMalicious, "attack-token-2"))
+	if code2 != http.StatusUnauthorized {
+		t.Fatalf("期望 401, 实际 %d", code2)
+	}
+	if got := atomic.LoadInt32(&calls); got != 2 {
+		t.Fatalf("第 2 次攻击请求应打后端, 实际调用 %d", got)
+	}
+
+	// 恶意 IP 发送第 3 个无效 token -> 触发单 IP 频次限制被拦截, 不应打后端, 不消耗全局桶
+	code3 := serve(a, reqFrom(ipMalicious, "attack-token-3"))
+	if code3 != http.StatusUnauthorized {
+		t.Fatalf("期望 401, 实际 %d", code3)
+	}
+	if got := atomic.LoadInt32(&calls); got != 2 {
+		t.Fatalf("单 IP 限流后不应再打后端, 实际调用 %d", got)
+	}
+
+	// 恶意 IP 发送第 4 个无效 token -> 同样被单 IP 拦截
+	code4 := serve(a, reqFrom(ipMalicious, "attack-token-4"))
+	if code4 != http.StatusUnauthorized {
+		t.Fatalf("期望 401, 实际 %d", code4)
+	}
+	if got := atomic.LoadInt32(&calls); got != 2 {
+		t.Fatalf("单 IP 限流后不应再打后端, 实际调用 %d", got)
+	}
+
+	// 正常 IP 发起合法请求 -> 全局桶未被恶意 IP 耗尽, 单 IP 桶独立, 正常打后端并验证成功 (200)
+	codeGood := serve(a, reqFrom(ipLegitimate, "valid-token-user-a"))
+	if codeGood != http.StatusOK {
+		t.Fatalf("正常 IP 请求应成功 (200), 实际 %d", codeGood)
+	}
+	if got := atomic.LoadInt32(&calls); got != 3 {
+		t.Fatalf("正常 IP 请求应打后端, 实际调用 %d", got)
+	}
+}
+
+// 验证 ipRateLimiterPool 的容量硬上限(LRU 淘汰)与令牌恢复机制
+func TestIPRateLimiterPool(t *testing.T) {
+	fakeNow := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
+	nowFunc := func() time.Time { return fakeNow }
+
+	// 创建容量上限为 2，burst=2，rps=1 的池
+	pool := newIPRateLimiterPool(2, 1.0, 2, nowFunc)
+
+	// 空 IP 不做限制
+	if !pool.Allow("") {
+		t.Fatalf("空 IP 应放行")
+	}
+
+	// IP1: 突发消耗
+	if !pool.Allow("1.1.1.1") {
+		t.Fatalf("IP1 首次应放行")
+	}
+	if !pool.Allow("1.1.1.1") {
+		t.Fatalf("IP1 第 2 次应放行 (burst=2)")
+	}
+	if pool.Allow("1.1.1.1") {
+		t.Fatalf("IP1 第 3 次应被限流")
+	}
+
+	// 时间前进 1 秒，按 rps=1 恢复 1 个令牌
+	fakeNow = fakeNow.Add(time.Second)
+	if !pool.Allow("1.1.1.1") {
+		t.Fatalf("1 秒后 IP1 恢复 1 个令牌，应放行")
+	}
+	if pool.Allow("1.1.1.1") {
+		t.Fatalf("IP1 令牌再次耗尽，应限流")
+	}
+
+	// 添加 IP2 和 IP3，测试 LRU 淘汰 (容量为 2)
+	_ = pool.Allow("2.2.2.2")
+	_ = pool.Allow("3.3.3.3")
+
+	// 此时池内应有 2.2.2.2 和 3.3.3.3，1.1.1.1 应被淘汰
+	pool.mu.Lock()
+	count := len(pool.items)
+	pool.mu.Unlock()
+	if count != 2 {
+		t.Fatalf("容量超出时应保持在 2, 实际 %d", count)
+	}
+}
+
 func TestClientIP(t *testing.T) {
 	// X-Forwarded-For 优先,取最初客户端(首个)。
 	r := httptest.NewRequest(http.MethodGet, "/", nil)

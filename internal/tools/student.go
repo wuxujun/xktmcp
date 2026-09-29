@@ -127,7 +127,7 @@ func StudentSearchHandler(
 			pageSize = 100
 		}
 
-		cacheKey := fmt.Sprintf("student:search:%s:%s:%d:%d", userID, args.Query, page, pageSize)
+		cacheKey := encodeCacheKey("student:search", userID, args.Query, page, pageSize)
 		if val, ok := studentCache.Get(cacheKey); ok {
 			cached := val.(toolResultItem)
 			logger.InfofCtx(ctx, "[Cache] student_search hit cache: query=%s page=%d", args.Query, page)
@@ -165,7 +165,7 @@ func StudentOrderHandler(
 		userID := trace.EffectiveUserID(ctx, args.UserID)
 		logger.ToolfCtx(ctx, "student_order", "querier=%s subject=%s", userID, pii.MaskSubject(args.ID))
 
-		cacheKey := fmt.Sprintf("student:order:%s:%s", userID, args.ID)
+		cacheKey := encodeCacheKey("student:order", userID, args.ID)
 		if val, ok := studentCache.Get(cacheKey); ok {
 			cached := val.(toolResultItem)
 			logger.InfofCtx(ctx, "[Cache] student_order hit cache: id=%s", args.ID)
@@ -203,7 +203,7 @@ func StudentExamHandler(
 		userID := trace.EffectiveUserID(ctx, args.UserID)
 		logger.ToolfCtx(ctx, "student_exam", "querier=%s subject=%s", userID, pii.MaskSubject(args.ID))
 
-		cacheKey := fmt.Sprintf("student:exam:%s:%s", userID, args.ID)
+		cacheKey := encodeCacheKey("student:exam", userID, args.ID)
 		if val, ok := studentCache.Get(cacheKey); ok {
 			cached := val.(toolResultItem)
 			logger.InfofCtx(ctx, "[Cache] student_exam hit cache: id=%s", args.ID)
@@ -241,7 +241,7 @@ func StudentGetHandler(
 		userID := trace.EffectiveUserID(ctx, args.UserID)
 		logger.ToolfCtx(ctx, "student_get", "querier=%s subject=%s", userID, pii.MaskSubject(args.ID))
 
-		cacheKey := fmt.Sprintf("student:get:%s:%s", userID, args.ID)
+		cacheKey := encodeCacheKey("student:get", userID, args.ID)
 		if val, ok := studentCache.Get(cacheKey); ok {
 			cached := val.(toolResultItem)
 			logger.InfofCtx(ctx, "[Cache] student_get hit cache: id=%s", args.ID)

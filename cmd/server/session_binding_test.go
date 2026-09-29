@@ -825,3 +825,98 @@ func TestSSESessionBindingMiddlewareRejectsMissingFirstEvent(t *testing.T) {
 		t.Fatalf("body = %q, want only generic rejection", got)
 	}
 }
+
+func TestSessionBindingsLRUEviction(t *testing.T) {
+	identity := authenticatedSessionIdentity(t, "token-a")
+	// 容量上限为 2，TTL 为 1 小时，关闭 janitor
+	bindings := newSessionBindingsWithOptions(2, time.Hour, 0, time.Now)
+	defer bindings.Stop()
+
+	if !bindings.bind(streamableSessionTransport, "session-1", identity) {
+		t.Fatal("bind session-1 failed")
+	}
+	if !bindings.bind(streamableSessionTransport, "session-2", identity) {
+		t.Fatal("bind session-2 failed")
+	}
+	if bindings.len() != 2 {
+		t.Fatalf("len = %d, want 2", bindings.len())
+	}
+
+	// 绑定第 3 个会话，应导致最旧的 session-1 被淘汰
+	if !bindings.bind(streamableSessionTransport, "session-3", identity) {
+		t.Fatal("bind session-3 failed")
+	}
+	if bindings.len() != 2 {
+		t.Fatalf("len = %d, want 2 after eviction", bindings.len())
+	}
+	if bindings.matches(streamableSessionTransport, "session-1", identity) {
+		t.Fatal("session-1 should have been evicted by LRU policy")
+	}
+	if !bindings.matches(streamableSessionTransport, "session-2", identity) {
+		t.Fatal("session-2 should remain valid")
+	}
+	if !bindings.matches(streamableSessionTransport, "session-3", identity) {
+		t.Fatal("session-3 should remain valid")
+	}
+}
+
+func TestSessionBindingsIdleTTLExpiration(t *testing.T) {
+	identity := authenticatedSessionIdentity(t, "token-a")
+	fakeNow := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
+	nowFunc := func() time.Time { return fakeNow }
+
+	// TTL 为 10 分钟
+	bindings := newSessionBindingsWithOptions(100, 10*time.Minute, 0, nowFunc)
+	defer bindings.Stop()
+
+	if !bindings.bind(streamableSessionTransport, "session-1", identity) {
+		t.Fatal("bind session-1 failed")
+	}
+
+	// 5 分钟后访问，未过期，且会刷新活跃时间
+	fakeNow = fakeNow.Add(5 * time.Minute)
+	if !bindings.matches(streamableSessionTransport, "session-1", identity) {
+		t.Fatal("session-1 should still be valid after 5 minutes")
+	}
+
+	// 再过 6 分钟（距离上次刷新 6 分钟，未到 10 分钟），仍应有效
+	fakeNow = fakeNow.Add(6 * time.Minute)
+	if !bindings.matches(streamableSessionTransport, "session-1", identity) {
+		t.Fatal("session-1 should still be valid within refreshed TTL")
+	}
+
+	// 再过 11 分钟，超过 10 分钟 TTL，应失效被删除
+	fakeNow = fakeNow.Add(11 * time.Minute)
+	if bindings.matches(streamableSessionTransport, "session-1", identity) {
+		t.Fatal("session-1 should have expired after idle timeout")
+	}
+	if bindings.len() != 0 {
+		t.Fatalf("len = %d, want 0 after lazy expiration", bindings.len())
+	}
+}
+
+func TestSessionBindingsJanitorCleanup(t *testing.T) {
+	identity := authenticatedSessionIdentity(t, "token-a")
+	fakeNow := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
+	nowFunc := func() time.Time { return fakeNow }
+
+	bindings := newSessionBindingsWithOptions(100, 5*time.Minute, 0, nowFunc)
+	defer bindings.Stop()
+
+	_ = bindings.bind(streamableSessionTransport, "session-1", identity)
+	_ = bindings.bind(streamableSessionTransport, "session-2", identity)
+	if bindings.len() != 2 {
+		t.Fatalf("len = %d, want 2", bindings.len())
+	}
+
+	// 时间推移 10 分钟
+	fakeNow = fakeNow.Add(10 * time.Minute)
+
+	// 手动触发一次 deleteExpired
+	bindings.deleteExpired()
+
+	if bindings.len() != 0 {
+		t.Fatalf("len = %d, want 0 after janitor cleanup", bindings.len())
+	}
+}
+

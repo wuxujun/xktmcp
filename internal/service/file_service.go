@@ -315,11 +315,15 @@ func (s *FileService) ReadFilePreview(ctx context.Context, filePath string, star
 var errStopWalk = errors.New("stop file walk")
 
 func cleanFilePath(value string) (string, error) {
-	value = filepath.ToSlash(strings.TrimSpace(value))
-	if value == "" || path.IsAbs(value) || value == "." || strings.HasPrefix(value, "../") || strings.Contains(value, "/../") || strings.Contains(value, "\\") {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" || strings.Contains(trimmed, "\\") {
 		return "", errors.New("path must be a relative file path within FILE_SEARCH_ROOT")
 	}
-	return value, nil
+	cleaned := path.Clean(filepath.ToSlash(trimmed))
+	if cleaned == "." || cleaned == ".." || strings.HasPrefix(cleaned, "../") || path.IsAbs(cleaned) {
+		return "", errors.New("path must be a relative file path within FILE_SEARCH_ROOT")
+	}
+	return cleaned, nil
 }
 
 func NewFileService(root string) (*FileService, error) {

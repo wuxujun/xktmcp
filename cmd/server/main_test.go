@@ -67,6 +67,8 @@ func TestMetricsAuthHandler(t *testing.T) {
 		{"missing", "", http.StatusUnauthorized},
 		{"wrong", "Bearer other", http.StatusUnauthorized},
 		{"valid", "Bearer secret", http.StatusOK},
+		{"valid_lowercase", "bearer secret", http.StatusOK},
+		{"valid_mixed_case", "BeArEr secret", http.StatusOK},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rr := httptest.NewRecorder()
@@ -78,6 +80,16 @@ func TestMetricsAuthHandler(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("unconfigured_allows_access", func(t *testing.T) {
+		t.Setenv("METRICS_AUTH_TOKEN", "")
+		rr := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+		metricsAuthHandler(next).ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status=%d, want 200", rr.Code)
+		}
+	})
 }
 
 func TestReadinessHandler(t *testing.T) {
@@ -590,6 +602,28 @@ func TestRequestLoggingMiddlewareSanitizesMCPSessionIDMetadata(t *testing.T) {
 	}
 	if got := headers["X-Trace-Id"]; !reflect.DeepEqual(got, []any{"header-trace-456"}) {
 		t.Fatalf("X-Trace-Id request header = %#v, want preserved", got)
+	}
+}
+
+func TestRequestLoggingMiddlewareRedactsPIIInPayloads(t *testing.T) {
+	var logs bytes.Buffer
+	logger.Init(&logs)
+	handler := requestLoggingMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"phone":"13912345678","status":"success"}`))
+	}), httpPayloadLogConfig{Enabled: true, MaxBytes: 1024})
+
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"query_phone":"13800138000","id_card":"110101199003072345"}`))
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	output := logs.String()
+	// 验证明文敏感信息绝不出现在的日志输出中
+	if strings.Contains(output, "13800138000") || strings.Contains(output, "110101199003072345") || strings.Contains(output, "13912345678") {
+		t.Fatalf("plaintext PII leaked into HTTP payload logs:\n%s", output)
+	}
+	// 验证脱敏后的掩码字段正确存在
+	if !strings.Contains(output, "138****8000") || !strings.Contains(output, "139****5678") {
+		t.Fatalf("masked PII missing from HTTP payload logs:\n%s", output)
 	}
 }
 

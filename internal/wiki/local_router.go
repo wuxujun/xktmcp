@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/wuxujun/xktmcp/internal/model"
+	"github.com/wuxujun/xktmcp/internal/trace"
 )
 
 var ErrUserWikiNotConfigured = errors.New("local wiki is not configured for this user")
@@ -52,8 +53,33 @@ func (r *LocalRouter) DocumentCount() int {
 	return total
 }
 
-func (r *LocalRouter) searcher(userID string) (*LocalSearcher, error) {
+func (r *LocalRouter) searcher(ctx context.Context, userID string) (*LocalSearcher, error) {
 	userID = strings.TrimSpace(userID)
+	if ctx != nil {
+		principal := trace.AuthenticatedUserIDFromContext(ctx)
+		// 若请求持有可信主体，且显式指定的 userID 与其冲突，拒绝访问
+		if principal != "" && userID != "" && principal != userID {
+			return nil, ErrUserWikiNotConfigured
+		}
+		// 若请求持有可信主体且 userID 为空，优先采用可信主体
+		if principal != "" && userID == "" {
+			userID = principal
+		}
+
+		// 若来自外部网络请求，且试图访问私有租户目录
+		if trace.RequestOriginFromContext(ctx) == trace.OriginNetwork {
+			if _, isPrivateUser := r.users[userID]; isPrivateUser {
+				// 访问私有用户目录必须持有完全一致的已认证可信主体
+				if principal == "" || principal != userID {
+					if r.requireMapping {
+						return nil, ErrUserWikiNotConfigured
+					}
+					return r.defaultSearcher, nil
+				}
+			}
+		}
+	}
+
 	if searcher, ok := r.users[userID]; ok {
 		return searcher, nil
 	}
@@ -64,7 +90,7 @@ func (r *LocalRouter) searcher(userID string) (*LocalSearcher, error) {
 }
 
 func (r *LocalRouter) SearchWiki(ctx context.Context, userID, query, category string, topK int) ([]model.WikiSearchResult, error) {
-	searcher, err := r.searcher(userID)
+	searcher, err := r.searcher(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -72,7 +98,7 @@ func (r *LocalRouter) SearchWiki(ctx context.Context, userID, query, category st
 }
 
 func (r *LocalRouter) GetPage(ctx context.Context, userID, pageID, title string) (*model.WikiPage, error) {
-	searcher, err := r.searcher(userID)
+	searcher, err := r.searcher(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -80,7 +106,7 @@ func (r *LocalRouter) GetPage(ctx context.Context, userID, pageID, title string)
 }
 
 func (r *LocalRouter) ListTree(ctx context.Context, userID, parentID string, depth int) ([]model.WikiNode, error) {
-	searcher, err := r.searcher(userID)
+	searcher, err := r.searcher(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -88,7 +114,7 @@ func (r *LocalRouter) ListTree(ctx context.Context, userID, parentID string, dep
 }
 
 func (r *LocalRouter) UpsertPage(ctx context.Context, userID, title, content, category, summary, mode string) (*model.WikiUpsertResult, error) {
-	searcher, err := r.searcher(userID)
+	searcher, err := r.searcher(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -96,7 +122,7 @@ func (r *LocalRouter) UpsertPage(ctx context.Context, userID, title, content, ca
 }
 
 func (r *LocalRouter) GetBacklinks(ctx context.Context, userID, pageID string) ([]model.WikiBacklink, error) {
-	searcher, err := r.searcher(userID)
+	searcher, err := r.searcher(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -104,7 +130,7 @@ func (r *LocalRouter) GetBacklinks(ctx context.Context, userID, pageID string) (
 }
 
 func (r *LocalRouter) ListResources(ctx context.Context, userID string, limit int) (ResourceCatalog, error) {
-	searcher, err := r.searcher(userID)
+	searcher, err := r.searcher(ctx, userID)
 	if err != nil {
 		return ResourceCatalog{}, err
 	}
@@ -112,7 +138,7 @@ func (r *LocalRouter) ListResources(ctx context.Context, userID string, limit in
 }
 
 func (r *LocalRouter) ReadPageResource(ctx context.Context, userID, uri string) (string, error) {
-	searcher, err := r.searcher(userID)
+	searcher, err := r.searcher(ctx, userID)
 	if err != nil {
 		return "", err
 	}

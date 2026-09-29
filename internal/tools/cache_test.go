@@ -187,3 +187,25 @@ func TestMemoryCache_DeletePrefix(t *testing.T) {
 		t.Fatal("DeletePrefix removed an unrelated cache entry")
 	}
 }
+
+func TestEncodeCacheKey_CollisionResistance(t *testing.T) {
+	// 验证包含冒号时不会发生键碰撞
+	k1 := encodeCacheKey("student:order", "user", "10:20")
+	k2 := encodeCacheKey("student:order", "user:10", "20")
+	if k1 == k2 {
+		t.Fatalf("expected distinct keys for colon-separated inputs, got collision: %s", k1)
+	}
+
+	// 验证不同参数位置与类型的编码隔离性
+	k3 := encodeCacheKey("student:search", "u1", "query", 1, 20)
+	k4 := encodeCacheKey("student:search", "u1", "query", 2, 10)
+	if k3 == k4 {
+		t.Fatalf("expected distinct keys for different pagination, got: %s", k3)
+	}
+
+	// 验证布尔与浮点等类型正常编码且无冒号注入
+	ragKey := encodeCacheKey("rag:search", "u1", "query:special", 5, 0.75, true, false, true)
+	if ragKey == "" {
+		t.Fatal("expected non-empty cache key")
+	}
+}

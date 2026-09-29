@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/wuxujun/xktmcp/internal/trace"
 )
 
 func TestLocalRouterIsolatesUsers(t *testing.T) {
@@ -180,4 +182,75 @@ func createRouterWikiWithPageID(t *testing.T, name, title, content string) strin
 		t.Fatal(err)
 	}
 	return root
+}
+
+func TestLocalRouterEnforcesTrustedPrincipalForNetworkRequests(t *testing.T) {
+	defaultRoot := createRouterWiki(t, "default", "公共手册", "公共内容")
+	userARoot := createRouterWiki(t, "user-a", "甲用户手册", "苹果规则")
+	userBRoot := createRouterWiki(t, "user-b", "乙用户手册", "香蕉规则")
+
+	// 1. 严格模式：RequireUserMapping = true
+	routerStrict, err := NewLocalRouter(LocalConfig{
+		Root: defaultRoot,
+		Users: map[string]LocalConfig{
+			"user-a": {Root: userARoot},
+			"user-b": {Root: userBRoot},
+		},
+		RequireUserMapping: true,
+	})
+	if err != nil {
+		t.Fatalf("NewLocalRouter returned error: %v", err)
+	}
+
+	netCtx := trace.WithRequestOrigin(context.Background(), trace.OriginNetwork)
+
+	// 场景 A: 外部网络请求没有可信认证主体 (principal == "")，试图传入 user-a
+	// 应直接拒绝，返回 ErrUserWikiNotConfigured，防止 IDOR 越权
+	if _, err := routerStrict.SearchWiki(netCtx, "user-a", "苹果", "", 5); !errors.Is(err, ErrUserWikiNotConfigured) {
+		t.Fatalf("网络请求缺少可信主体应被拒绝, 实际 err=%v", err)
+	}
+
+	// 场景 B: 外部网络请求持有合法可信主体 user-a，访问 user-a
+	ctxUserA := trace.WithAuthenticatedUserID(netCtx, "user-a")
+	resA, err := routerStrict.SearchWiki(ctxUserA, "user-a", "苹果", "", 5)
+	if err != nil || len(resA) != 1 || resA[0].Title != "甲用户手册" {
+		t.Fatalf("持有可信主体 user-a 应成功访问, 实际 res=%+v, err=%v", resA, err)
+	}
+	// userID 留空时应自动采用可信主体
+	resAAuto, err := routerStrict.SearchWiki(ctxUserA, "", "苹果", "", 5)
+	if err != nil || len(resAAuto) != 1 || resAAuto[0].Title != "甲用户手册" {
+		t.Fatalf("持有可信主体且 userID 为空时应自动采用, 实际 res=%+v, err=%v", resAAuto, err)
+	}
+
+	// 场景 C: 外部网络请求持有可信主体 user-a，试图指定访问 user-b
+	if _, err := routerStrict.SearchWiki(ctxUserA, "user-b", "香蕉", "", 5); !errors.Is(err, ErrUserWikiNotConfigured) {
+		t.Fatalf("可信主体与请求用户冲突应被拒绝, 实际 err=%v", err)
+	}
+
+	// 2. 非严格模式：RequireUserMapping = false
+	routerNonStrict, err := NewLocalRouter(LocalConfig{
+		Root: defaultRoot,
+		Users: map[string]LocalConfig{
+			"user-a": {Root: userARoot},
+			"user-b": {Root: userBRoot},
+		},
+		RequireUserMapping: false,
+	})
+	if err != nil {
+		t.Fatalf("NewLocalRouter returned error: %v", err)
+	}
+
+	// 场景 D: 外部网络请求没有可信主体，指定 user-a，应回退至公共默认 Wiki，绝不泄露 user-a 的私有内容
+	resFallback, err := routerNonStrict.SearchWiki(netCtx, "user-a", "公共", "", 5)
+	if err != nil || len(resFallback) != 1 || resFallback[0].Title != "公共手册" {
+		t.Fatalf("未认证网络请求在非严格模式下应回退到公共 Wiki, 实际 res=%+v, err=%v", resFallback, err)
+	}
+	// 验证它绝对查不到 user-a 的私有内容
+	resPrivateLeak, err := routerNonStrict.SearchWiki(netCtx, "user-a", "苹果", "", 5)
+	if err != nil {
+		t.Fatalf("查询失败: %v", err)
+	}
+	if len(resPrivateLeak) != 0 {
+		t.Fatalf("未认证网络请求泄露了私有内容: %+v", resPrivateLeak)
+	}
 }

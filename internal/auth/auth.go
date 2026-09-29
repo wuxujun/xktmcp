@@ -9,6 +9,7 @@ package auth
 
 import (
 	"bytes"
+	"container/list"
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -72,11 +73,13 @@ type Config struct {
 	TrustForwardedHeader bool
 
 	// 以下均有合理默认值。
-	PositiveTTL     time.Duration // 远程验证通过结果的缓存时长
-	NegativeTTL     time.Duration // 远程验证失败结果的缓存时长
-	RemoteRateRPS   float64       // 远程验证每秒最大请求数(令牌桶速率)
-	RemoteRateBurst int           // 令牌桶突发容量
-	RemoteTimeout   time.Duration // 单次远程验证 HTTP 超时
+	PositiveTTL       time.Duration // 远程验证通过结果的缓存时长
+	NegativeTTL       time.Duration // 远程验证失败结果的缓存时长
+	RemoteRateRPS     float64       // 远程验证每秒最大请求数(全局令牌桶速率)
+	RemoteRateBurst   int           // 全局令牌桶突发容量
+	RemoteIPRateRPS   float64       // 单 IP 远程验证每秒最大请求数(<=0 时使用合理默认值)
+	RemoteIPRateBurst int           // 单 IP 远程验证突发容量(<=0 时使用合理默认值)
+	RemoteTimeout     time.Duration // 单次远程验证 HTTP 超时
 	// RemoteCacheMaxEntries 是远程验证缓存最大条目数；零值使用默认值。
 	RemoteCacheMaxEntries int
 }
@@ -195,6 +198,8 @@ type Authenticator struct {
 	bucket    float64   // 当前令牌桶余量
 	lastRef   time.Time // 上次补充时间
 
+	ipLimiter *ipRateLimiterPool // 单 IP 远程验证限流器池 (LRU 淘汰,防单点恶意耗尽全局桶)
+
 	cache *verificationCache // 缓存校验结果 (key: sha256_hash_string)
 
 	tenantsByToken map[string]*Tenant
@@ -221,6 +226,18 @@ func New(cfg Config) (*Authenticator, error) {
 	if cfg.RemoteRateBurst <= 0 {
 		cfg.RemoteRateBurst = 10
 	}
+	if cfg.RemoteIPRateRPS <= 0 {
+		cfg.RemoteIPRateRPS = 2
+		if cfg.RemoteIPRateRPS > cfg.RemoteRateRPS {
+			cfg.RemoteIPRateRPS = cfg.RemoteRateRPS
+		}
+	}
+	if cfg.RemoteIPRateBurst <= 0 {
+		cfg.RemoteIPRateBurst = 3
+		if cfg.RemoteIPRateBurst > cfg.RemoteRateBurst {
+			cfg.RemoteIPRateBurst = cfg.RemoteRateBurst
+		}
+	}
 	if cfg.RemoteTimeout <= 0 {
 		cfg.RemoteTimeout = 3 * time.Second
 	}
@@ -241,6 +258,7 @@ func New(cfg Config) (*Authenticator, error) {
 		remoteOK:       cfg.RemoteVerifyURL != "",
 		bucket:         float64(cfg.RemoteRateBurst),
 		lastRef:        time.Now(),
+		ipLimiter:      newIPRateLimiterPool(cfg.RemoteCacheMaxEntries, cfg.RemoteIPRateRPS, cfg.RemoteIPRateBurst, time.Now),
 		tenantsByToken: make(map[string]*Tenant),
 	}
 
@@ -317,6 +335,7 @@ func hostAllowed(rawURL string, allowed []string) bool {
 // Middleware 返回包裹 next 的认证中间件。
 func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r = r.WithContext(trace.WithRequestOrigin(r.Context(), trace.OriginNetwork))
 		body, ok := a.readRequestBody(w, r)
 		if !ok {
 			return
@@ -382,7 +401,13 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 
 		// 3) 远程兜底(带缓存/白名单/限流)。
 		if a.remoteOK {
-			if ok, userID := a.verifyRemote(r.Context(), token); ok {
+			clientIP := ""
+			if secIP := a.securityClientIP(r); secIP != nil {
+				clientIP = secIP.String()
+			} else {
+				clientIP = ip
+			}
+			if ok, userID := a.verifyRemote(r.Context(), token, clientIP); ok {
 				ctx := r.Context()
 				if userID != "" {
 					ctx = context.WithValue(ctx, ctxKeyUserID, userID)
@@ -479,6 +504,11 @@ func ParseCIDRs(items []string) ([]*net.IPNet, error) {
 	return out, nil
 }
 
+// BearerFromHeader 从 Authorization 请求头解析 Bearer Token，大小写不敏感。
+func BearerFromHeader(r *http.Request) string {
+	return bearerFromHeader(r)
+}
+
 func bearerFromHeader(r *http.Request) string {
 	h := r.Header.Get("Authorization")
 	if h == "" {
@@ -504,9 +534,9 @@ func (a *Authenticator) reject(w http.ResponseWriter, r *http.Request, status in
 	http.Error(w, http.StatusText(status), status)
 }
 
-// verifyRemote 查缓存→限流→发起远程验证,并回写缓存。
+// verifyRemote 查缓存→单 IP 限流→全局限流→发起远程验证,并回写缓存。
 // 返回 (验证通过, userID)；userID 在远程响应未携带时为空字符串。
-func (a *Authenticator) verifyRemote(ctx context.Context, token string) (bool, string) {
+func (a *Authenticator) verifyRemote(ctx context.Context, token, clientIP string) (bool, string) {
 	key := hashToken(token)
 
 	// 1. 从缓存载入验证结果。
@@ -514,13 +544,19 @@ func (a *Authenticator) verifyRemote(ctx context.Context, token string) (bool, s
 		return e.ok, e.userID
 	}
 
-	// 2. 缓存失效，尝试远程验证（需加限流锁防瞬间穿透爆破）
+	// 2. 缓存失效，先检查单 IP 限流，防止单点恶意请求耗尽全局令牌桶
+	if a.ipLimiter != nil && clientIP != "" && !a.ipLimiter.Allow(clientIP) {
+		logger.Errorf("[Auth] 客户端 IP %s 远程验证被限流(触发单 IP 频次限制),拒绝本次请求", clientIP)
+		return false, ""
+	}
+
+	// 3. 尝试全局限流（需加限流锁防瞬间穿透爆破）
 	a.limiterMu.Lock()
 	allowed := a.allowRemoteCallLocked()
 	a.limiterMu.Unlock()
 
 	if !allowed {
-		logger.Errorf("[Auth] 远程验证被限流,拒绝本次请求")
+		logger.Errorf("[Auth] 远程验证被全局限流,拒绝本次请求")
 		return false, ""
 	}
 
@@ -531,7 +567,7 @@ func (a *Authenticator) verifyRemote(ctx context.Context, token string) (bool, s
 		ttl = a.cfg.PositiveTTL
 	}
 
-	// 3. 回写缓存（包含 userID）
+	// 4. 回写缓存（包含 userID）
 	a.cache.Set(key, cacheEntry{ok: ok, userID: userID, exp: time.Now().Add(ttl)})
 	return ok, userID
 }
@@ -794,4 +830,78 @@ func isToolAllowed(toolName string, allowed []string) bool {
 		}
 	}
 	return false
+}
+
+// ipRateLimiterItem 维护单个 IP 的令牌桶状态
+type ipRateLimiterItem struct {
+	ip      string
+	bucket  float64
+	lastRef time.Time
+}
+
+// ipRateLimiterPool 使用 LRU 双向链表管理单 IP 令牌桶，具备容量硬上限防止无界内存增长
+type ipRateLimiterPool struct {
+	mu         sync.Mutex
+	items      map[string]*list.Element
+	lru        *list.List
+	maxEntries int
+	rps        float64
+	burst      int
+	now        func() time.Time
+}
+
+func newIPRateLimiterPool(maxEntries int, rps float64, burst int, now func() time.Time) *ipRateLimiterPool {
+	if maxEntries <= 0 {
+		maxEntries = 4096
+	}
+	if now == nil {
+		now = time.Now
+	}
+	return &ipRateLimiterPool{
+		items:      make(map[string]*list.Element),
+		lru:        list.New(),
+		maxEntries: maxEntries,
+		rps:        rps,
+		burst:      burst,
+		now:        now,
+	}
+}
+
+// Allow 判定指定客户端 IP 当前是否允许发起一次未命中缓存的远程验证
+func (p *ipRateLimiterPool) Allow(ip string) bool {
+	if ip == "" || p.burst <= 0 {
+		return true
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	now := p.now()
+	if el, ok := p.items[ip]; ok {
+		p.lru.MoveToFront(el)
+		item := el.Value.(*ipRateLimiterItem)
+		elapsed := now.Sub(item.lastRef).Seconds()
+		item.lastRef = now
+		item.bucket += elapsed * p.rps
+		if maxBurst := float64(p.burst); item.bucket > maxBurst {
+			item.bucket = maxBurst
+		}
+		if item.bucket >= 1 {
+			item.bucket--
+			return true
+		}
+		return false
+	}
+
+	item := &ipRateLimiterItem{
+		ip:      ip,
+		bucket:  float64(p.burst) - 1,
+		lastRef: now,
+	}
+	p.items[ip] = p.lru.PushFront(item)
+	for p.lru.Len() > p.maxEntries {
+		oldest := p.lru.Back()
+		delete(p.items, oldest.Value.(*ipRateLimiterItem).ip)
+		p.lru.Remove(oldest)
+	}
+	return true
 }

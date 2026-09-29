@@ -36,6 +36,11 @@ func TestFileServiceNamesContentInfoAndPreview(t *testing.T) {
 	if _, err := svc.GetFileInfo(context.Background(), "../Guide-2026.md"); err == nil {
 		t.Fatal("path traversal accepted")
 	}
+	for _, badPath := range []string{"..", "folder/..", "folder/../..", "/etc/passwd", "dir\\file"} {
+		if _, err := svc.GetFileInfo(context.Background(), badPath); err == nil {
+			t.Fatalf("expected path %q to be rejected", badPath)
+		}
+	}
 	if _, err := svc.ReadFilePreview(context.Background(), "Guide-2026.md", 0, 2); err == nil {
 		t.Fatal("invalid line accepted")
 	}
