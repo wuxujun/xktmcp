@@ -25,7 +25,7 @@
 
 ### 认证与配置
 
-- `/metrics` 支持可选 `METRICS_AUTH_TOKEN` Bearer Token 鉴权；未配置时保持兼容。
+- `/metrics` 已升级为必须配置独立 `METRICS_AUTH_TOKEN`；未配置或仅空白时返回 HTTP 503，配置后要求 Bearer Token。
 - 支持 `AUTH_REMOTE_CACHE_POSITIVE_TTL` 和 `AUTH_REMOTE_CACHE_NEGATIVE_TTL`，使用 Go duration 格式；默认仍为 5 分钟和 30 秒。
 
 ### 工具配置和测试隔离

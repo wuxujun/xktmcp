@@ -2,8 +2,8 @@
 
 > 文件归档：`docs/wiki-resources-capability-design-260901.md`
 > 创建日期：2026-09-01
-> 修订日期：2026-09-01
-> 状态：待评审
+> 修订日期：2026-09-29
+> 状态：Phase 1–2 已实现；Phase 3 订阅通知未实现
 > 适用范围：`mode=local` 的 LLM-Wiki
 > SDK 基线：`github.com/modelcontextprotocol/go-sdk v1.7.0`
 
@@ -94,12 +94,12 @@ SDK 的订阅表按 URI 关联会话，`ResourceUpdated` 会通知所有订阅�
 ```
 
 - `enabled`：是否注册 Catalog、Tree 和 Page Template，默认 `false`；
-- `subscriptions_enabled`：是否启用第三阶段订阅，默认 `false`，且只能在 `enabled=true` 的单租户/独立 Server 中开启；
+- `subscriptions_enabled`：第三阶段订阅预留开关；当前 Phase 1–2 实现要求保持 `false`，设置为 `true` 会返回配置错误；
 - `max_catalog_entries`：Catalog 最大返回条目数，默认 `1000`，合法范围 `1–10000`；
 - `mode=http` 时设置 `enabled=true` 直接返回配置错误，避免出现配置已开启但能力未生效的静默状态。
-- `local.users` 非空时设置 `subscriptions_enabled=true` 返回配置错误，阻止按 URI 广播造成跨租户误通知。
+- `subscriptions_enabled=true` 当前统一返回配置错误，阻止误以为订阅已生效；第三阶段若实施，仍需禁止共享多租户 Server 按 URI 广播造成跨租户误通知。
 
-阶段 1–2 尚未装配订阅处理器，因此该阶段的实现必须拒绝任何 `subscriptions_enabled=true`；第三阶段落地时再放开单租户配置。
+阶段 1–2 尚未装配订阅处理器，因此当前实现必须拒绝任何 `subscriptions_enabled=true`；第三阶段落地时再按单租户/独立 Server 方案放开。
 
 ---
 
@@ -397,7 +397,7 @@ s.ResourceUpdated(ctx, &mcp.ResourceUpdatedNotificationParams{URI: uri})
 1. `go test ./...`、`go test -race ./internal/wiki ./internal/server ./internal/tools` 和 `go vet ./...` 全部通过。
 2. 共享多租户 Server 的静态 Resource 元数据不包含任何租户页面信息。
 3. 不存在通过 URI、错误消息或资源描述获取其他租户信息的路径。
-4. Resources 未启用时，或 HTTP Wiki 模式保持默认 Resources 关闭时，现有 11 个 Tools 行为不变。
+4. Resources 未启用时，或 HTTP Wiki 模式保持默认 Resources 关闭时，现有 14 个工具注册逻辑行为不变；文件工具仍仅在 `FILE_SEARCH_ROOT` 配置后注册。
 5. 目标 MCP 客户端的实际 Resources 支持情况形成版本化联调记录，不再使用“所有主流客户端均支持”的无版本结论。
 
 ---
@@ -410,7 +410,7 @@ s.ResourceUpdated(ctx, &mcp.ResourceUpdatedNotificationParams{URI: uri})
 | 2 | MCP 注册、协议集成测试、客户端基础联调 | 1 天 | 否 |
 | 3 | 单租户订阅装配、Upsert 事件、外部变化通知 | 1–2 天 | 否，可独立评估必要性 |
 
-建议先完成阶段 1–2。只有目标客户端确认消费资源订阅时，再实施阶段 3，避免为暂未使用的通知能力增加启动装配复杂度。
+阶段 1–2 已落地并有传输与客户端兼容性记录；只有目标客户端确认消费资源订阅时，再实施阶段 3，避免为暂未使用的通知能力增加启动装配复杂度。
 
 ---
 

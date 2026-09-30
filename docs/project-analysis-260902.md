@@ -46,7 +46,7 @@ xktmcp/
 │   │   ├── register.go         # 工具统一装配 + 埋点包装
 │   │   └── wiki_resources.go   # MCP Resources 注册 & Handler
 │   ├── service/                # 业务编排层（StudentService, WikiService…）
-│   ├── tools/                  # MCP 工具声明 + Handler（11 个工具）
+│   ├── tools/                  # MCP 工具声明 + Handler（14 个工具，文件工具按配置注册）
 │   ├── trace/                  # Trace ID + userID 上下文传播
 │   └── wiki/                   # LLM-Wiki 本地后端（索引、读写、Resources）
 └── docs/                       # 设计文档
@@ -54,7 +54,7 @@ xktmcp/
 
 ---
 
-## 4. MCP 工具清单（11 个）
+## 4. MCP 工具清单（14 个，文件工具按配置启用）
 
 ### 4.1 学员域（StudentAPI）
 
@@ -88,6 +88,16 @@ xktmcp/
 | `wiki_list_tree` | 获取分类目录树（深度 1–10，默认 3） | 10min |
 | `wiki_upsert_page` | 创建/覆盖/追加 Wiki 词条（支持 create/update/append 模式） | — |
 | `wiki_get_backlinks` | 查询反向引用关系（知识图谱导航） | — |
+
+### 4.5 本地文件域（FileService）
+
+| 工具名 | 功能 | 注册条件 |
+|:---|:---|:---|
+| `file_search` | 搜索 `FILE_SEARCH_ROOT` 下的可共享文本文件，支持 `builtin`/GSE 分词 | 配置 `FILE_SEARCH_ROOT` |
+| `file_get_info` | 获取搜索根目录内文件元数据 | 配置 `FILE_SEARCH_ROOT` |
+| `file_read_preview` | 按行号区间读取 UTF-8 文本预览，最多 200 行 | 配置 `FILE_SEARCH_ROOT` |
+
+纯文件工具白名单（如 `MCP_ENABLED_TOOLS=file_*`）可在无 `API_TOKEN`、无 Wiki 配置时独立启动；与上游或 Wiki 工具混合启用时仍按对应后端要求加载配置。
 
 ---
 

@@ -148,13 +148,13 @@ var snap atomic.Pointer[snapshot]
 
 ---
 
-### 🟡 4.2 `/metrics` 端点无任何访问控制
+### ✅ 4.2 `/metrics` 原无访问控制（已修复）
 
-**文件：** [`cmd/server/main.go#L142-L164`](file:///Users/xujunwu/Documents/IDEAProject/xktmcp/cmd/server/main.go#L141-L164)
+**文件：** [`cmd/server/main.go`](file:///Users/xujunwu/Documents/IDEAProject/xktmcp/cmd/server/main.go)
 
-**问题：** `/metrics` 完全公开，Go 运行时指标（goroutine 数、GC 信息、内存）可能泄露内部系统信息。
+**原问题：** `/metrics` 曾完全公开，Go 运行时指标（goroutine 数、GC 信息、内存）可能泄露内部系统信息。
 
-**改进方向：** 支持可选 `METRICS_AUTH_TOKEN` 环境变量，为 `/metrics` 添加 Bearer Token 校验。
+**当前实现：** `/metrics` 必须设置独立 `METRICS_AUTH_TOKEN`；未设置或仅空白时返回 HTTP 503 且不调用指标处理器，缺失或错误 Bearer Token 返回 HTTP 401，正确 Token 才返回 Prometheus 指标。仍建议通过内网、反向代理或安全组限制探针与指标端点的访问范围。
 
 ---
 
@@ -251,7 +251,7 @@ backoff = min(backoff*2, maxBackoff)
 | 2.3 | Wiki 索引 Prometheus 指标 | 🟡 中 | S（2h） |
 | 3.1 | 搜索评分加 IDF 加权 | 🟡 中 | M（4~6h） |
 | 3.2 | 索引刷新无锁原子替换 | 🟡 中 | M（3~4h） |
-| 4.2 | `/metrics` 可选鉴权 | 🟡 中 | S（1~2h） |
+| 4.2 | `/metrics` 必需独立 Token 鉴权 | ✅ 已完成 | — |
 | 5.2 | `student_batch_get` 批量工具 | 🟡 中 | M（4h） |
 | 6.1 | 重试加 Jitter 抖动 | 🟡 中 | XS（30min） |
 | 1.3 | 缓存大小 Gauge 指标 | 🟢 低 | XS（30min） |
@@ -289,7 +289,7 @@ backoff = min(backoff*2, maxBackoff)
 | 2.1 上游 HTTP 指标 | 当前缺少请求耗时、状态码和重试维度 | 值得做，中优先级，能直接区分工具慢和上游慢 |
 | 2.2 熔断器状态 Gauge | 当前只有状态转换计数，没有当前状态 | 值得做，中优先级 |
 | 2.3 Wiki 索引指标 | 缺少刷新耗时、成功时间和文档数指标，已有 `DocumentCount()` | 值得做；“长时间未刷新”必须结合按需刷新语义判断 |
-| 4.2 `/metrics` 鉴权 | 应用层默认无鉴权；是否公开还取决于反向代理和网络隔离 | 公网可达时优先；已有网络隔离时优先级降低，新增 Token 会影响抓取配置 |
+| 4.2 `/metrics` 鉴权 | 已变更为必须配置 `METRICS_AUTH_TOKEN`；未配置返回 503 | 已完成；监控采集端需同步配置 Bearer Token，网络层仍建议限制访问范围 |
 | 4.3 Token 吊销窗口 | 远程验证正缓存默认 5 分钟，当前没有 TTL 环境配置 | 有即时撤销要求时处理；优先提供可配置 TTL，注意增加上游验证流量 |
 | 6.1 重试 Jitter | 当前使用固定 100ms、200ms 指数退避 | 值得做，中优先级；必须继续使用可取消的 timer，不直接使用不可取消的 `time.Sleep` |
 | 6.2 工具名前缀通配符 | 当前只接受已知工具的精确名称 | 低优先级，属于配置便利性；需定义未来新增工具是否自动启用 |
@@ -319,7 +319,7 @@ backoff = min(backoff*2, maxBackoff)
 - 已增加 `xkt_upstream_request_duration_seconds`（按 API、HTTP 方法和状态码）及 `xkt_upstream_retries_total` 指标。
 - 已增加 `xkt_circuit_breaker_state` Gauge（0=closed、1=half-open、2=open），并在熔断器创建和状态转换时同步更新。
 - 已增加 Wiki 索引文档数、最后成功刷新时间和刷新耗时指标，索引标签使用固定 `local` 值，避免把目录路径作为高基数标签。
-- `/metrics` 已支持可选 `METRICS_AUTH_TOKEN`；未配置时保持兼容，配置后要求 Bearer Token。
+- `/metrics` 已要求独立 `METRICS_AUTH_TOKEN`；未配置或仅空白时返回 HTTP 503，配置后要求 Bearer Token。
 - 已支持 `AUTH_REMOTE_CACHE_POSITIVE_TTL` 和 `AUTH_REMOTE_CACHE_NEGATIVE_TTL`，使用 Go duration 格式；未配置时保持 5 分钟和 30 秒默认值。
 - `TestLiveWikiSearchPort8081` 已改为显式设置 `MCP_RUN_LIVE_TESTS=true` 才运行，避免默认全量测试依赖本地 8081 服务。
 - `MCP_ENABLED_TOOLS` 已支持 `wiki_*`、`student_*` 等已知工具前缀；未匹配的前缀仍会拒绝启动，避免误启用未知工具。

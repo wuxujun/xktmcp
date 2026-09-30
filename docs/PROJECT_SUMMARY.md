@@ -85,13 +85,13 @@ HTTP 模式自动检测协议版本，兼容新旧协议：
 |------|------|------|
 | `/health` | 免 | 存活探针，返回 `{"status":"ok"}` |
 | `/ready` | 免 | 就绪探针，返回 `{"status":"ready"}` |
-| `/metrics` | 免（建议网络隔离） | Prometheus 指标抓取 |
+| `/metrics` | 必须配置 `METRICS_AUTH_TOKEN`；未配置返回 503，错误/缺失 Bearer 返回 401 | Prometheus 指标抓取 |
 
 ---
 
 ## 四、MCP 工具清单
 
-工具可通过环境变量 `MCP_ENABLED_TOOLS`（逗号分隔）按需启用。共 **10 个工具**：
+工具可通过环境变量 `MCP_ENABLED_TOOLS`（逗号分隔，支持 `student_*`、`wiki_*`、`file_*` 等已知前缀）按需启用。当前注册表共 **14 个工具**；未配置 `FILE_SEARCH_ROOT` 时文件工具不会注册。
 
 ### 学员工具（Student）
 
@@ -121,8 +121,16 @@ HTTP 模式自动检测协议版本，兼容新旧协议：
 | `wiki_search` | 关键词检索 Wiki 词条概览 | HTTP / Local |
 | `wiki_get_page` | 获取 Wiki 词条完整 Markdown 正文 | HTTP / Local |
 | `wiki_list_tree` | 浏览 Wiki 分类树/目录大纲 | HTTP / Local |
-| `wiki_upsert_page` | 新建/更新/追加 Wiki 词条（写操作） | Local only |
+| `wiki_upsert_page` | 新建/更新/追加 Wiki 词条（写操作） | HTTP / Local |
 | `wiki_get_backlinks` | 查询指向指定词条的反向链接 | HTTP / Local |
+
+### 本地文件工具（FileService）
+
+| 工具名 | 说明 | 注册条件 |
+|--------|------|----------|
+| `file_search` | 在服务端共享目录内搜索文本文件，支持 `builtin` 或 GSE 分词 | 配置 `FILE_SEARCH_ROOT` |
+| `file_get_info` | 获取搜索根目录内文件元数据 | 配置 `FILE_SEARCH_ROOT` |
+| `file_read_preview` | 按行号区间预览 UTF-8 文本文件，最多 200 行 | 配置 `FILE_SEARCH_ROOT` |
 
 ---
 
@@ -153,7 +161,7 @@ markdown.go            # Markdown 前置 matter 解析
 - 搜索索引后台定期刷新（`refresh_interval_seconds`）
 - 支持**多用户隔离**：每个 userId 可映射独立的内容目录
 - `require_user_mapping` 模式下未知用户请求被拦截
-- MCP Resources 订阅（`subscriptions_enabled`）支持 VsCode 等客户端实时浏览
+- MCP Resources Catalog、Tree、Page 读取能力已实现；订阅通知（`subscriptions_enabled`）尚未实现，配置为 `true` 会启动失败
 
 ---
 
@@ -207,8 +215,9 @@ markdown.go            # Markdown 前置 matter 解析
 - PII 信息（手机号、身份证等）落日志前脱敏
 
 ### 指标
-- Prometheus 指标通过 `/metrics` 暴露
+- Prometheus 指标通过 `/metrics` 暴露；必须设置独立 `METRICS_AUTH_TOKEN`，未设置或空白返回 HTTP 503
 - 追踪维度：工具名称、请求状态（success/error/cache_hit）
+- 覆盖工具调用、缓存命中、上游请求耗时/重试、熔断器状态、Wiki 索引文档数/刷新时间/刷新耗时
 
 ### 追踪
 - 每请求注入 `correlationId`（优先 `toolCallId` > `sessionId`，否则自动生成）
@@ -311,7 +320,7 @@ Wiki 包包含丰富的基准测试（搜索、反向链接、索引刷新），
 
 近期工作集中在 **Wiki 本地后端**功能的完善：
 
-1. Wiki Resources 用户隔离与 MCP 订阅支持
+1. Wiki Resources 用户隔离与静态读取支持；订阅仍未实现
 2. 本地 Wiki 目录树、反向链接索引构建
 3. 搜索分词器优化（GSE 中文分词集成）
 4. Wiki 搜索性能基准测试与调优
@@ -330,7 +339,7 @@ Wiki 包包含丰富的基准测试（搜索、反向链接、索引刷新），
 | 零明文存储 | Token SHA-256 哈希内存存储，日志掩码 |
 | 弹性保护 | 独立熔断器（每 API），带状态转换 |
 | 可观测 | 结构化日志 + Prometheus 指标 + 请求级 traceId |
-| PII 保护 | 手机号/身份证在落日志/响应前自动脱敏 |
+| PII 保护 | 手机号/身份证在落日志/响应前自动脱敏，HTTP payload 调试日志也会脱敏 |
 | Wiki 离线 | 完整本地 Markdown Wiki 引擎，支持中文搜索 |
 | 多用户隔离 | Wiki 目录按 userId 映射隔离 |
 | 生产就绪 | 优雅关闭（15s）、日志轮转、就绪/存活探针 |

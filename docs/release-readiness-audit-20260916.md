@@ -41,9 +41,9 @@ HTTP/SSE 服务对 POST 请求体设置 30 秒读取截止时间，同时保留 
 
 发布时必须独立注入 Wiki 配置。多实例有状态传输仍需要会话粘性；绑定表与 SDK session 都是进程内状态。
 
-### 2. `/metrics` 默认可免认证访问
+### 2. `/metrics` 必须配置独立 Token
 
-生产环境应通过 `METRICS_AUTH_TOKEN` 或反向代理/网络隔离保护 `/metrics`。`/health` 和 `/ready` 保持免认证时，也必须确保部署网络边界可靠。
+当前 `/metrics` 未配置或仅空白 `METRICS_AUTH_TOKEN` 时返回 HTTP 503，不输出指标；配置后缺失或错误 Bearer Token 返回 HTTP 401。生产环境仍应通过反向代理、内网或安全组限制 `/metrics`、`/health` 与 `/ready` 的访问范围。
 
 ## 四、Tasks 1–4 已有聚焦验证证据
 

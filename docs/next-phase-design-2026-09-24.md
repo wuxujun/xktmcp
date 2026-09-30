@@ -52,7 +52,7 @@
 
 1. `API_TOKEN` 是上游调用凭据；HTTP/SSE 还需独立的 MCP 认证配置。`AUTH_TENANTS` 的可信 `user_id` 可作为本地 Wiki 用户隔离主体，共享 Token、IP 白名单和 stdio 中的 `userId` 不能作为该安全边界。
 2. 本地 Wiki 配置需与内容目录一同部署。多租户目录隔离启用 `require_user_mapping=true` 时，映射必须覆盖目标用户；文件工具的 `FILE_SEARCH_ROOT` 是共享可见目录。
-3. `/health`、`/ready` 默认免认证；`/metrics` 可使用 `METRICS_AUTH_TOKEN`，否则需由网络层限制访问。`/ready` 仅表示初始化完成，不代表上游持续健康。
+3. `/health`、`/ready` 默认免认证；`/metrics` 必须设置 `METRICS_AUTH_TOKEN`，未设置或空白时返回 503，错误/缺失 Bearer 返回 401。三类运维端点仍需由网络层限制访问。`/ready` 仅表示初始化完成，不代表上游持续健康。
 4. 有状态 SSE 和旧版 Streamable HTTP 在多实例部署中需要会话粘性；轮换 Bearer Token 后客户端须新建会话。HTTP 请求体与日志内容开关沿用现有上限和默认值。
 
 指南附有发布检查清单：配置文件存在且指向预期目录、工具白名单与权限一致、探针与指标端点处于预期网络范围、日志内容记录关闭或受控、会话路由满足传输方式、回滚时保留前一版配置。验收方式是在隔离环境中按矩阵逐项验证启动结果、`tools/list` 和关键探针；不要求连接真实上游来验证纯本地模式。
