@@ -217,7 +217,7 @@ flowchart TD
 
 ### 1. 部署与运维风险
 - **探针与指标端口暴露风险**：
-  - `/health` 与 `/ready` 为免认证探针；若 `METRICS_AUTH_TOKEN` 未配置，`/metrics` 端点处于公开免鉴权状态。
+  - `/health` 与 `/ready` 为免认证探针；`/metrics` 必须设置独立 `METRICS_AUTH_TOKEN`，未配置或仅包含空白时返回 HTTP 503 拒绝服务，配置后缺少或错误 Token 返回 401。
   - **建议**：在部署指南及容器编排（如 K8s Ingress / Nginx 反向代理）中，明确将 `/metrics` 和探针端口限定于内部 VPC 或运维内网，禁止直接向公网暴露。
 - **本地文件搜索的作用域隔离**：
   - `FILE_SEARCH_ROOT` 属于服务级共享目录，获准使用 `file_search` 工具的客户端能检索该目录下的所有非隐藏文件，不具备按 `userId` 细粒度隔离的特性。
